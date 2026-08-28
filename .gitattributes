@@ -1,0 +1,5 @@
+# Store every text file with LF in the repository, and check it out with LF
+# as well. This project targets every platform, so a Windows working tree
+# should be byte-for-byte identical to a macOS or Linux one — otherwise the
+# first cross-platform contribution arrives as a whole-file diff.
+* text=auto eol=lf
