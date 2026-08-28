@@ -1,0 +1,13 @@
+[package]
+name = "agentdocs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87"
+description = "A terminal viewer for AI agent skills, rules, and docs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Kwangseok-Seo/agentdocs"
+readme = "README.md"
+keywords = ["tui", "markdown", "viewer", "ai-agents", "skills"]
+categories = ["command-line-utilities", "text-processing"]
+
+[dependencies]

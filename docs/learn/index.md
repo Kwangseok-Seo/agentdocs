@@ -1,0 +1,23 @@
+# agentdocs learning wiki — index
+
+A wiki of the **Rust and tooling knowledge** accumulated while building agentdocs. To look something up, **pick it from this index and read only that page** — the pages are atomic and linked to each other with `[[wikilink]]`, forming a graph rather than a tutorial to read front to back.
+
+> Domain vocabulary → [`/CONTEXT.md`](../../CONTEXT.md) · architecture decisions → [`/docs/adr/`](../adr/) · **this directory is for language and tooling only.**
+
+## Concepts (`concepts/`)
+
+- [[ownership]] — one owner per value, move vs `Copy`, why the rule exists at all
+- [[borrowing]] — `&T` and `&mut T`, the three rules, and the silent bug each one prevents
+- [[owned-vs-borrowed-pairs]] — `String`/`&str`, `PathBuf`/`&Path`, and why signatures borrow in and own out
+- [[option-and-match]] — `Option`, `match` exhaustiveness, `if let`, and what `unwrap` throws away
+- [[paths]] — paths are not strings; `join`, `parent`, `extension`, `starts_with`, `display`
+- [[fs-read-dir]] — one level only, `Result` twice over, what `count()` really counts, recursion
+- [[macros-and-formatting]] — `println!` and why its first argument must be a literal
+- [[mutability]] — immutable by default, what a leading `_` costs you, shadowing
+
+## Milestones (`milestones/`)
+
+The journey log: what was built, which concepts it required, and which pitfalls were actually hit.
+
+- [M0](milestones/M0.md) — project skeleton
+- [M1](milestones/M1.md) — source discovery
