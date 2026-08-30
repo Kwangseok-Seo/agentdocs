@@ -48,7 +48,33 @@ let Ok(entries) = fs::read_dir(dir) else {
 };
 ```
 
-`let ... else` keeps the success path at the outer indentation instead of pushing it inside a block, and the `else` arm must diverge — `return`, `break`, or `panic!`. It cannot fall through, because there would be nothing bound to fall through with.
+`let ... else` keeps the success path at the outer indentation instead of pushing it inside a block, and the `else` arm must diverge — `return`, `continue`, `break`, or `panic!`. It cannot fall through, because there would be nothing bound to fall through with.
+
+Inside a loop, `continue` is what makes this a **guard clause**. One gate is a matter of taste; two or more, and the difference shows:
+
+```rust
+// if let — the real work sinks
+for item in read {
+    if let Some(ext) = path.extension() {
+        if ext == "md" {
+            if let Some(stem) = path.file_stem() {
+                out.push(...);                                  // five levels deep
+            }
+        }
+    }
+}
+
+// let ... else — the gates line up and the work stays flat
+for item in read {
+    let Some(ext) = path.extension() else { continue };
+    if ext != "md" { continue; }
+    let Some(stem) = path.file_stem() else { continue };
+
+    out.push(...);                                              // two levels
+}
+```
+
+The two gates are not equally real, and it is worth knowing which is which. `extension()` returns `None` for any file without a dot — `README`, `.gitignore` — and a planted extensionless file is exactly what made M1 miscount. `file_stem()` returning `None` needs a path ending in `..`, which `read_dir` never produces. It is still written as a gate rather than an `unwrap()`, because M1 already owes a debt of unwraps to M3 and there is no reason to add to it.
 
 **`(missing)` rather than `0` is the point of the first form.** Printing `0` would make "the directory is empty" and "the directory does not exist" identical on screen, which is exactly the `exit 0` wrong answer this project treats as worse than a crash. Two different facts have to look different.
 
