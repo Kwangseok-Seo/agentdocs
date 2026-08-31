@@ -1,0 +1,85 @@
+# testing
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_absent_directory_reads_as_missing() {
+        assert_eq!(reason(io::ErrorKind::NotFound), "missing");
+    }
+}
+```
+
+Five things are happening in those six lines.
+
+**`#[cfg(test)]` is conditional compilation.** The module does not exist during `cargo build` — it is compiled only by `cargo test`. Tests cost the shipped binary nothing, so there is no reason to keep them in a separate crate to "keep them out".
+
+**`mod tests { }` is a module**, a namespace inside the file. A module does not automatically see its parent's items, hence **`use super::*`** — `super` is one level up, `*` is everything. Privacy is not in the way: an item private to the crate root is visible to its descendants, so tests reach `reason`, `md_files` and `Walked` without any of them being `pub`.
+
+**`#[test]` marks a function the runner calls.** No arguments, no return value.
+
+**A test fails by panicking.** `assert_eq!(a, b)` panics and prints both sides; `assert!(cond)` panics on false. Which means **`unwrap()` is correct inside a test** — the panic is the failure report. The same call that is a defect in the program is the right tool ten lines below it.
+
+**The name is the report.** `cargo test` prints every name it runs, so they are written as sentences: `a_bundle_missing_its_lead_is_shown_rather_than_hidden`, not `test_bundle_2`.
+
+## Fixtures on disk, without a crate
+
+Walk functions need real directories. `std` is enough for that, as long as two tests never collide — the runner uses **parallel threads**.
+
+```rust
+fn scratch(name: &str) -> PathBuf {
+    let dir = env::temp_dir().join(format!("agentdocs-test-{}-{}", std::process::id(), name));
+    let _ = fs::remove_dir_all(&dir);      // leftovers from a previous run
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+```
+
+The process id keeps two concurrent runs apart, the `name` keeps two tests apart, and clearing at the start (rather than at the end) survives a test that panicked before it could tidy up.
+
+**Links can be built too**, which was assumed impossible for most of this milestone and is not:
+
+```rust
+#[cfg(windows)]
+let made = std::os::windows::fs::symlink_dir(target, link);
+#[cfg(unix)]
+let made = std::os::unix::fs::symlink(target, link);
+```
+
+Windows grants that privilege to administrators and to accounts with Developer Mode enabled, so it can fail where the rest of the suite runs fine. A test that cannot build its fixture must not report success quietly: this one prints `SKIPPED` with the error kind to stderr and returns, and `cargo test -- --nocapture | grep -c SKIPPED` says whether that ever happened.
+
+What `std` still cannot build is **a directory that refuses to be read** — removing your own read permission takes `icacls` on Windows and `chmod` on Unix — so the paths that increment `unreadable` have no automated test and are covered only by a fixture built by hand.
+
+## A green suite is not evidence
+
+The interesting question about a test is not whether it passes. It is whether it can fail. Break the code on purpose and watch — nine mutations against 58 tests:
+
+| mutation | tests red |
+|---|---|
+| `read_dir` failure swallowed again (the pre-M3 behaviour) | 3 |
+| `short()` stops filtering control characters | 3 |
+| an empty declared `name:` overwrites the filename anyway | 1 |
+| `bundle_dirs` stops treating a link as Bundle-shaped | 2 |
+| `md_files` goes back to requiring a plain file | 1 |
+| `md_tree` asks about the target again, following links | 2 |
+| the name column stops being filtered | 1 |
+| a dangling link is dropped instead of listed | 1 |
+| **`md_tree` stops counting an unreadable subdirectory** | **0** |
+
+The last row is the finding, and it survived the milestone: nothing automated proves that a walk ever reaches `unreadable`. Read without that table, "58 passed" would have said "M3 is covered", and the one number this milestone invented would have been the one number nothing checked.
+
+Five of those rows did not exist until a reviewer pointed out that **the entire link surface had no test** — the mutation reverting this milestone's own headline fix passed 48 of 48. The tests that now cover it were ruled out earlier on an assumption about privileges that turned out to be false.
+
+## Pitfalls hit
+
+- **`unwrap_err()` demands `Debug` from the *success* type.** `md_files(&dir).unwrap_err()` did not compile until `Walked`, `Entry` and `EntryKind` derived `Debug` — because to report an unexpected `Ok`, the macro has to print it. The requirement comes from the branch that is *not* supposed to happen.
+- **The mutation harness failed silently and looked like a passing test.** The first attempt drove `sed -i 's|...|...|'` over a pattern containing `|`, so the substitution was rejected, the file was never modified, and the suite reported 48 passed. Read at face value that is "the suite has a second hole". A `diff` against the backup now runs before each mutation, and prints `!! NOT APPLIED` when nothing changed.
+- **Tests can be written that pass on broken code.** The mutation table above is the only reason that claim is not being made here on faith; eight of the nine mutations were caught, one was not, and which was which was not predictable by reading.
+- **A missing test is invisible to the tests.** The mutation battery only asks about behaviour somebody thought to mutate. The link surface had *no* coverage, and no amount of running the suite would have said so — it took a reviewer grepping for `symlink` and finding one occurrence, the production line itself.
+- **Code that only `main` calls cannot be tested.** The control-character filter was correct and the name column still leaked, because the filtering happened in a `println!` argument inside `main`. Pulling the line into `fn row(entry: &Entry) -> String` — one function, no new behaviour — is the whole difference between a claim and a test.
+
+## Related
+
+[[result-and-errors]] · [[fs-read-dir]] · [[file-types-and-links]] · [[structs]]

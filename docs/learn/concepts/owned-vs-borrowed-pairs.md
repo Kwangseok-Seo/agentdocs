@@ -23,6 +23,23 @@ fn find_project_root(start: &Path, home: &Path) -> Option<PathBuf> {
 
 `fs::read_dir` accepts `&str`, `PathBuf`, and `&Path` alike, because it takes a generic argument bounded by the `AsRef<Path>` trait. Callers pass whatever they already hold, without converting first.
 
+## The borrow that outlives everything: `&'static str`
+
+```rust
+fn reason(kind: io::ErrorKind) -> &'static str {
+    match kind {
+        io::ErrorKind::NotFound => "missing",
+        ...
+    }
+}
+```
+
+A **string literal is compiled into the executable**, so it is alive for as long as the program is. `'static` is the name of that lifetime, and it is the honest return type for a function that only ever hands back literals.
+
+Note what forces the annotation. Every other borrowed return in this codebase points at something an argument owns, so the compiler can work out how long it lasts. Here there is no reference among the arguments — `io::ErrorKind` is a plain value — so there is nothing to borrow *from* and the lifetime has to be named.
+
+`-> String` would compile just as well and allocate a fresh copy, on every call, of text that never changes. Lifetimes in general arrive in M6; this is the one case that already pays for itself.
+
 ## Related
 
-[[ownership]] · [[borrowing]] · [[paths]]
+[[ownership]] · [[borrowing]] · [[paths]] · [[result-and-errors]]

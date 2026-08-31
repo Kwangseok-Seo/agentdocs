@@ -19,6 +19,9 @@ A wiki of the **Rust and tooling knowledge** accumulated while building agentdoc
 - [[impl-and-methods]] — associated function vs method, `Self`, `&mut self`, and borrows that end early
 - [[vec]] — growth and reallocation, the three ways to iterate, and `&[T]`
 - [[str-scanning]] — `lines`, `split_once`, `peek`, and why cutting by bytes is a lottery
+- [[result-and-errors]] — `Result`, the four ways an error can end, `?` and why propagation is contagious
+- [[file-types-and-links]] — asking about the entry or about the target, and the two opposite bugs one boolean produced
+- [[testing]] — `#[cfg(test)]`, fixtures without a crate, and why a green suite proves nothing until you break the code
 
 ## Milestones (`milestones/`)
 
@@ -27,3 +30,4 @@ The journey log: what was built, which concepts it required, and which pitfalls 
 - [M0](milestones/M0.md) — project skeleton
 - [M1](milestones/M1.md) — source discovery
 - [M2](milestones/M2.md) — domain model and frontmatter
+- [M3](milestones/M3.md) — error handling and the first tests

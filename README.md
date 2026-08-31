@@ -13,7 +13,7 @@ So this repository is not a finished codebase. It is a **record of something gro
 
 ## Status
 
-**M2 complete** — the binary discovers its sources, walks each one by its own rule, and reads a name and description out of each entry's frontmatter. No screen yet.
+**M3 complete** — the binary discovers its sources, walks each one by its own rule, reads a name and description out of each entry's frontmatter, and **says what it could not read instead of reporting zero**. No screen yet.
 
 ```
 $ cd ~/projects/cli-maker && agentdocs        # abridged: the real output is 121 lines
@@ -45,6 +45,17 @@ The global block is identical wherever you run it; only the project block follow
 
 That output is already longer than a terminal window, which is the argument for the screen that arrives in M5.
 
+When something on disk is broken — and for a program that reads other people's directories, broken is the normal case rather than an edge one — the row says so instead of quietly rounding down:
+
+```
+  agents:(permission denied)     # the directory exists and holds a file; it will not open
+  commands:0                     # genuinely empty
+  agents/skills:(missing)        # no such path
+  docs:3 (1 unreadable)          # three found, one subdirectory refused
+```
+
+Through M2 the first of those lines read `0`, indistinguishable from the second, because a failure that could not be expressed in the return type had already been discarded before anything could print it ([ADR-0006](docs/adr/0006-unreadable-is-counted-not-dropped.md)). A directory link is now listed but never walked into — which is what stops a junction pointing at its own parent from turning a two-file directory into 128 rows ([ADR-0007](docs/adr/0007-links-are-listed-not-followed.md)).
+
 ## Where it is headed
 
 ```
@@ -72,14 +83,14 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 | **M0** ✅ | Project skeleton, `cargo run` | cargo, `Cargo.toml`, editions |
 | **M1** ✅ | Source discovery — 5 global sources + the current repository | **ownership & borrowing**, `String` vs `&str`, `Vec`, `std::fs`, recursion |
 | **M2** ✅ | Domain model + frontmatter parsing | `struct`, **`enum` + `match`**, `Option`, `impl` |
-| **M3** | Error handling + first tests | **`Result`, the `?` operator**, `thiserror`, `#[cfg(test)]` |
+| **M3** ✅ | Error handling + first tests | **`Result`, the `?` operator**, `#[cfg(test)]`, entry vs target |
 | **M4** | Search and filtering (still CLI) | **iterators & closures**, traits |
 | **M5** | TUI skeleton — three panes, key navigation | external crates, **the event loop**, modules |
 | **M6** | Markdown rendering | **lifetimes**, slices |
 | **M7** | Bundle tree (expand / collapse) | recursive data structures, `Box` |
 | **M8** | Code block highlighting + scrolling | `syntect`, state management |
 | **M9** | `$EDITOR` delegation + file watching | `std::process`, **threads & channels** |
-| **M10** | Config file (extra sources, ordering) | `serde`, TOML |
+| **M10** | Config file (extra sources, ordering) | `serde`, TOML, `thiserror` |
 | **M11** | Distribution — multi-platform binaries, install scripts, CI | release profiles, cross-compilation |
 
 > The theory, syntax, and pitfalls collected at each milestone live in [`docs/learn/`](docs/learn/) as a concept-by-concept knowledge base — the evidence for *what was actually learned*.
