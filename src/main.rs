@@ -22,6 +22,7 @@ struct Entry {
     path: PathBuf,
     kind: EntryKind,
     description: Option<String>,
+    text: Option<String>,
 }
 
 #[derive(Debug)]
@@ -46,7 +47,16 @@ impl Entry {
     /// filesystem in place.
     fn load_frontmatter(&mut self) {
         let Some(doc) = self.doc() else { return };
-        let Ok(text) = fs::read_to_string(doc) else { return };
+        let Ok(bytes) = fs::read(doc) else { return };
+
+        // One byte that is not UTF-8 — a quote pasted from another encoding —
+        // would make `read_to_string` refuse the whole file, and the file would
+        // silently drop out of every search. Decoded lossily, only that byte is
+        // lost: it shows as `�`.
+        let text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
 
         let fm = parse_frontmatter(&text);
         if let Some(name) = fm.name {
@@ -58,19 +68,40 @@ impl Entry {
             }
         }
         self.description = fm.description;
+        self.text = Some(text);
+    }
+
+    /// Whether every search term appears somewhere in this Entry: in its name,
+    /// or in the text of the file behind it. With no terms at all, every Entry
+    /// matches — `all` of nothing is true.
+    fn matches(&self, terms: &[String]) -> bool {
+        let name = self.name.to_lowercase();
+        let text = self.text.as_deref().unwrap_or("").to_lowercase();
+
+        terms.iter().all(|t| text.contains(t) || name.contains(t))
+    }
+
+    /// The first line of the file that holds any of the terms, numbered from 1,
+    /// so that a row can show why it matched. `None` when there is no text to
+    /// look in, when only the name matched, or when a term that holds a line
+    /// break was found in the text but, by definition, on no single line.
+    fn first_hit(&self, terms: &[String]) -> Option<(usize, &str)> {
+        let text = self.text.as_deref()?;
+
+        text.lines()
+            .enumerate()
+            .find(|(_, line)| {
+                let l = line.to_lowercase();
+                terms.iter().any(|t| l.contains(t))
+            })
+            .map(|(i, line)| (i + 1, line))
     }
 }
 
+#[derive(Default)]
 struct Frontmatter {
     name: Option<String>,
     description: Option<String>,
-}
-
-impl Frontmatter {
-    /// Nothing was declared: every field absent.
-    fn none() -> Self {
-        Frontmatter { name: None, description: None }
-    }
 }
 
 /// Read the YAML frontmatter that opens a Markdown file.
@@ -86,13 +117,13 @@ fn parse_frontmatter(text: &str) -> Frontmatter {
     let mut lines = text.lines().peekable();
 
     let Some(first) = lines.next() else {
-        return Frontmatter::none();                  // empty file
+        return Frontmatter::default();               // empty file
     };
     if first.trim_end() != "---" {
-        return Frontmatter::none();                  // the file opens with something else
+        return Frontmatter::default();               // the file opens with something else
     }
 
-    let mut fm = Frontmatter::none();
+    let mut fm = Frontmatter::default();
 
     while let Some(line) = lines.next() {
         if line.trim_end() == "---" {
@@ -123,7 +154,7 @@ fn parse_frontmatter(text: &str) -> Frontmatter {
         }
     }
 
-    Frontmatter::none()                              // the block never closed
+    Frontmatter::default()                              // the block never closed
 }
 
 /// Join the indented lines that carry a YAML block value into one line. The
@@ -154,7 +185,7 @@ fn fold(lines: &mut Peekable<Lines>) -> String {
 }
 
 fn md_files(dir: &Path) -> io::Result<Walked> {
-    let mut out = Walked::new();
+    let mut out = Walked::default();
     let read = fs::read_dir(dir)?;
 
     for item in read {
@@ -171,7 +202,7 @@ fn md_files(dir: &Path) -> io::Result<Walked> {
 }
 
 fn md_tree(dir: &Path) -> io::Result<Walked> {
-    let mut out = Walked::new();
+    let mut out = Walked::default();
     let read = fs::read_dir(dir)?;
 
     for item in read {
@@ -193,7 +224,7 @@ fn md_tree(dir: &Path) -> io::Result<Walked> {
 }
 
 fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
-    let mut out = Walked::new();
+    let mut out = Walked::default();
     let read = fs::read_dir(dir)?;
 
     for item in read {
@@ -218,6 +249,7 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
             path,
             kind: EntryKind::Bundle { lead },
             description: None,
+            text: None,
         });
     }
     Ok(out)
@@ -291,6 +323,51 @@ fn short(s: &str, width: usize) -> String {
     out
 }
 
+/// The stretch of a matched line worth showing. A line whose earliest term
+/// already fits is shown from its start; otherwise it is shown from a little
+/// before that term, so the reason for the match is never the part cut off.
+fn around(line: &str, terms: &[String], width: usize) -> String {
+    let lower = line.to_lowercase();
+
+    // Where the earliest term starts in `lower`, and how long it is, in bytes.
+    let earliest: Option<(usize, usize)> = terms
+        .iter()
+        .filter_map(|t| lower.find(t.as_str()).map(|at| (at, t.len())))
+        .min();
+    let Some((at, len)) = earliest else {
+        return short(line, width);
+    };
+
+    // `at` and `len` are bytes of `lower`; the screen shows characters of `line`.
+    if chars_before(line, at + len) <= width {
+        return short(line, width);
+    }
+    let skip = chars_before(line, at).saturating_sub(10);
+    let rest: String = line.chars().skip(skip).collect();
+    format!("…{}", short(&rest, width))
+}
+
+/// How many characters of `line` start before byte `at` of its lowercase form.
+///
+/// Counting the characters of the lowercase copy instead would assume that
+/// lowercasing keeps every character one character long, and it does not: `İ`
+/// becomes `i` followed by a combining dot. So the original is walked one
+/// character at a time, adding up how long each becomes once lowercased. (The
+/// one character `str::to_lowercase` treats by context, a final `Σ`, lowercases
+/// to two bytes either way.)
+fn chars_before(line: &str, at: usize) -> usize {
+    let mut lower_bytes = 0;
+    let mut count = 0;
+    for c in line.chars() {
+        if lower_bytes >= at {
+            break;
+        }
+        lower_bytes += c.to_lowercase().map(char::len_utf8).sum::<usize>();
+        count += 1;
+    }
+    count
+}
+
 fn reason(kind: io::ErrorKind) -> &'static str {
     match kind {
         io::ErrorKind::NotFound => "missing",
@@ -302,17 +379,13 @@ fn reason(kind: io::ErrorKind) -> &'static str {
 
 /// What one Walk found: the Entries it could list, and how many things it could
 /// not read. A count that hides its own blind spots is a wrong count.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Walked {
     entries: Vec<Entry>,
     unreadable: usize,
 }
 
 impl Walked {
-    fn new() -> Self {
-        Walked { entries: Vec::new(), unreadable: 0 }
-    }
-
     /// Fold a subdirectory's findings into this one.
     fn absorb(&mut self, other: Walked) {
         self.entries.extend(other.entries);
@@ -328,7 +401,7 @@ fn md_entry(path: PathBuf) -> Option<Entry> {
     }
     let name = path.file_stem()?.to_string_lossy().to_string();
 
-    Some(Entry { name, path, kind: EntryKind::File, description: None })
+    Some(Entry { name, path, kind: EntryKind::File, description: None, text: None })
 }
 
 /// One Entry's line on screen: the name it is known by, and as much of its
@@ -342,9 +415,58 @@ fn row(entry: &Entry) -> String {
     }
 }
 
+/// The lines one walked Source puts on screen: a heading with its count, then a
+/// row for each Entry the search kept, each followed by the line that made it
+/// match. Without search terms this is exactly the listing printed before M4 —
+/// every Entry, the plain count, no matched lines. A function for the same
+/// reason as `row`: a test can read what the terminal would have been given.
+fn listing(name: &str, walked: &Walked, terms: &[String]) -> Vec<String> {
+    let hits: Vec<&Entry> = walked.entries.iter()
+        .filter(|e| e.matches(terms))
+        .collect();
+
+    // Searching shows how many of the whole were kept.
+    let mut heading = if terms.is_empty() {
+        format!("  {}:{}", name, walked.entries.len())
+    } else {
+        format!("  {}:{}/{}", name, hits.len(), walked.entries.len())
+    };
+    if walked.unreadable > 0 {
+        heading.push_str(&format!(" ({} unreadable)", walked.unreadable));
+    }
+
+    let mut lines = vec![heading];
+    for entry in hits {
+        lines.push(row(entry));
+        // Out of somebody else's file, so through `around` and with it
+        // `printable`, like every other field on screen.
+        if let Some((n, line)) = entry.first_hit(terms) {
+            lines.push(format!("      {n}: {}", around(line.trim(), terms, 60)));
+        }
+    }
+    lines
+}
+
+/// The words to search for: every argument after the program's own path,
+/// lowercased once here so that matching compares like with like. Any iterator
+/// of `String`s will do — `env::args()` in `main`, a plain array in a test.
+///
+/// An argument that is empty or only whitespace is not a term. The empty
+/// string is inside every text: one stray `""` — an unset shell variable is
+/// enough — would keep every Entry on its own, and beside a real term would
+/// point each kept Entry at its first line.
+fn search_terms(args: impl Iterator<Item = String>) -> Vec<String> {
+    args.skip(1)
+        .filter(|a| !a.trim().is_empty())
+        .map(|a| a.to_lowercase())
+        .collect()
+}
+
 fn main() {
     let home = env::home_dir();
     let cwd = env::current_dir().ok();
+
+    let terms = search_terms(env::args());
 
     let mut sources = Vec::new();
     if let Some(home) = &home {
@@ -387,13 +509,8 @@ fn main() {
 
         match src.entries() {
             Ok(walked) => {
-                print!("  {}:{}", src.name, walked.entries.len());
-                if walked.unreadable > 0 {
-                    print!(" ({} unreadable)", walked.unreadable);
-                }
-                println!();
-                for entry in &walked.entries {
-                    println!("{}", row(entry));
+                for line in listing(&src.name, &walked, &terms) {
+                    println!("{line}");
                 }
             }
             Err(e) => println!("  {}:({})", src.name, reason(e.kind())),
@@ -513,11 +630,11 @@ mod tests {
 
     #[test]
     fn absorbing_adds_both_the_entries_and_the_blind_spots() {
-        let mut a = Walked::new();
+        let mut a = Walked::default();
         a.entries.push(md_entry(PathBuf::from("one.md")).unwrap());
         a.unreadable = 1;
 
-        let mut b = Walked::new();
+        let mut b = Walked::default();
         b.entries.push(md_entry(PathBuf::from("two.md")).unwrap());
         b.unreadable = 2;
 
@@ -845,6 +962,313 @@ mod tests {
     fn ordinary_text_passes_through_printable_unchanged() {
         assert_eq!(printable("session-retro"), "session-retro");
         assert_eq!(printable("한국어"), "한국어");
+    }
+
+    // ------------------------------------------------------------------ search
+
+    /// An Entry named `name`, as if its file had held `text`.
+    fn entry_with(name: &str, text: Option<&str>) -> Entry {
+        let mut entry = md_entry(PathBuf::from(format!("{name}.md"))).unwrap();
+        entry.text = text.map(|t| t.to_string());
+        entry
+    }
+
+    /// Search terms the way `main` hands them over: already lowercased.
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|w| w.to_string()).collect()
+    }
+
+    #[test]
+    fn with_no_terms_every_entry_matches() {
+        // `all` of nothing is true, which is what keeps a run without
+        // arguments identical to the listing before M4.
+        assert!(entry_with("alpha", Some("anything")).matches(&words(&[])));
+        assert!(entry_with("beta", None).matches(&words(&[])));
+    }
+
+    #[test]
+    fn every_term_has_to_appear_somewhere() {
+        assert!(!entry_with("notes", Some("adr only")).matches(&words(&["adr", "검증"])));
+        assert!(entry_with("notes", Some("adr and 검증")).matches(&words(&["adr", "검증"])));
+    }
+
+    #[test]
+    fn one_term_in_the_name_and_another_in_the_text_is_a_match() {
+        assert!(entry_with("dream", Some("mentions adr")).matches(&words(&["dream", "adr"])));
+    }
+
+    #[test]
+    fn matching_ignores_the_case_of_the_entry() {
+        let entry = entry_with("README", Some("Uses ADR"));
+        assert!(entry.matches(&words(&["readme"])));
+        assert!(entry.matches(&words(&["adr"])));
+    }
+
+    #[test]
+    fn an_entry_without_text_is_matched_by_its_name_alone() {
+        let entry = entry_with("alpha", None);
+        assert!(entry.matches(&words(&["alpha"])));
+        assert!(!entry.matches(&words(&["beta"])));
+    }
+
+    #[test]
+    fn the_first_line_holding_a_term_is_numbered_from_one() {
+        let entry = entry_with("notes", Some("intro\nsee ADR here\nADR again"));
+        assert_eq!(entry.first_hit(&words(&["adr"])), Some((2, "see ADR here")));
+    }
+
+    #[test]
+    fn any_single_term_is_enough_for_a_line() {
+        let entry = entry_with("notes", Some("intro\n검증 only\nadr only"));
+        assert_eq!(entry.first_hit(&words(&["adr", "검증"])), Some((2, "검증 only")));
+    }
+
+    #[test]
+    fn with_no_terms_there_is_no_line_to_show() {
+        // `any` of nothing is false: no line is printed under any row.
+        let entry = entry_with("notes", Some("intro\nbody"));
+        assert_eq!(entry.first_hit(&words(&[])), None);
+    }
+
+    #[test]
+    fn an_entry_without_text_has_no_line() {
+        assert_eq!(entry_with("alpha", None).first_hit(&words(&["alpha"])), None);
+    }
+
+    #[test]
+    fn a_match_in_the_name_alone_has_no_line() {
+        // Seen in the real corpus: `0005-http-error-surface` has "error" in
+        // its file name and only the Korean word for it in its text.
+        let entry = entry_with("http-error-surface", Some("에러 표면"));
+        assert!(entry.matches(&words(&["error"])));
+        assert_eq!(entry.first_hit(&words(&["error"])), None);
+    }
+
+    #[test]
+    fn a_term_spanning_a_line_break_matches_but_shows_no_line() {
+        // The whole text holds "part\nsecond"; no single line can.
+        let entry = entry_with("notes", Some("first part\nsecond part"));
+        assert!(entry.matches(&words(&["part\nsecond"])));
+        assert_eq!(entry.first_hit(&words(&["part\nsecond"])), None);
+    }
+
+    #[test]
+    fn a_word_in_the_body_is_found_after_a_walk() {
+        // The text has to survive `load_frontmatter`, which used to read the
+        // file and drop it.
+        let dir = scratch("search-body");
+        write(&dir.join("rule.md"), "# Title\n\nbody says 검증\n");
+
+        let src = Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles);
+        let walked = src.entries().unwrap();
+        assert!(walked.entries[0].matches(&words(&["검증"])));
+        assert_eq!(walked.entries[0].first_hit(&words(&["검증"])), Some((3, "body says 검증")));
+    }
+
+    #[test]
+    fn a_bundle_without_a_lead_has_no_text_to_search() {
+        let dir = scratch("search-nolead");
+        fs::create_dir_all(dir.join("beta")).unwrap();
+
+        let src = Source::new("skills", dir, Scope::Global, Walk::BundleDirs);
+        let walked = src.entries().unwrap();
+        assert_eq!(walked.entries[0].text, None);
+        assert!(walked.entries[0].matches(&words(&["beta"])));
+        assert!(!walked.entries[0].matches(&words(&["anything"])));
+    }
+
+    #[test]
+    fn a_file_with_a_byte_that_is_not_utf8_is_still_read_and_searched() {
+        // Found in review: one such byte made the whole file unreadable as a
+        // string, and it dropped out of search without a trace.
+        let dir = scratch("search-notutf8");
+        fs::write(
+            dir.join("broken.md"),
+            b"---\nname: broken\ndescription: still read\n---\nmentions adr \xff here\n",
+        )
+        .unwrap();
+
+        let src = Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles);
+        let walked = src.entries().unwrap();
+        let entry = &walked.entries[0];
+        assert_eq!(entry.description.as_deref(), Some("still read"));
+        assert!(entry.matches(&words(&["adr"])));
+        assert_eq!(entry.first_hit(&words(&["adr"])), Some((5, "mentions adr \u{fffd} here")));
+    }
+
+    // ------------------------------------------------------------------ around
+
+    #[test]
+    fn a_line_whose_term_fits_is_shown_from_its_start() {
+        let line = "# 아키텍처 결정 기록 (ADR)";
+        assert_eq!(around(line, &words(&["adr"]), 60), line);
+    }
+
+    #[test]
+    fn a_term_past_the_width_is_brought_into_view_with_ten_characters_before_it() {
+        let line = format!("{} adr tail", "x".repeat(100));
+        assert_eq!(around(&line, &words(&["adr"]), 60), "…xxxxxxxxx adr tail");
+    }
+
+    #[test]
+    fn whether_a_term_fits_is_counted_in_characters_not_bytes() {
+        // 33 characters but 93 bytes: a byte count would move a line that fits.
+        let line = format!("{}adr", "가".repeat(30));
+        assert_eq!(around(&line, &words(&["adr"]), 60), line);
+    }
+
+    #[test]
+    fn how_far_to_skip_is_counted_in_characters_not_bytes() {
+        // The term starts at character 70 and byte 210. Skipping 200 characters
+        // would skip the term along with everything else.
+        let line = format!("{}adr", "가".repeat(70));
+        assert_eq!(around(&line, &words(&["adr"]), 60), format!("…{}adr", "가".repeat(10)));
+    }
+
+    #[test]
+    fn the_earliest_term_decides_where_the_window_starts() {
+        let line = format!("{} early {} late", "x".repeat(80), "y".repeat(40));
+        let shown = around(&line, &words(&["late", "early"]), 60);
+        assert!(shown.starts_with("…xxxxxxxxx early"), "window missed the earliest term: {shown:?}");
+    }
+
+    #[test]
+    fn a_line_without_any_term_falls_back_to_the_plain_cut() {
+        let line = "x".repeat(100);
+        assert_eq!(around(&line, &words(&["zzz"]), 60), short(&line, 60));
+    }
+
+    #[test]
+    fn a_control_character_in_a_shown_line_never_reaches_the_terminal() {
+        let near = "\u{1b}[31m adr";
+        let far = format!("{}\u{1b}[31m adr", "x".repeat(100));
+        for line in [near, far.as_str()] {
+            let shown = around(line, &words(&["adr"]), 60);
+            assert!(!shown.chars().any(|c| c.is_control()), "leaked a control character: {shown:?}");
+            assert!(shown.contains("adr"));
+        }
+    }
+
+    #[test]
+    fn a_position_in_the_lowercase_copy_is_walked_back_to_the_original() {
+        // `İ` lowercases to `i` plus a combining dot: three bytes, two
+        // characters. In "İadr" the term starts at byte 3 of the lowercase
+        // copy, which is after one character of the original.
+        assert_eq!(chars_before("İadr", 3), 1);
+        assert_eq!(chars_before("xadr", 1), 1);
+        assert_eq!(chars_before("adr", 0), 0);
+    }
+
+    #[test]
+    fn a_character_that_lowercases_longer_does_not_empty_the_window() {
+        // Found in review: this line fits, but counting the lowercase copy put
+        // the term at character 80 of a 48-character line, and all that was
+        // left to show was `…`.
+        let line = format!("{}adr tail", "İ".repeat(40));
+        assert_eq!(around(&line, &words(&["adr"]), 60), line);
+    }
+
+    #[test]
+    fn a_character_that_lowercases_longer_does_not_move_the_window_off_the_term() {
+        // Found in review: the window landed in the filler, showing text that
+        // did not contain the term as the reason for the match.
+        let line = format!("{}adr {}", "İ".repeat(29), "FILLERTEXTNOMATCHHERE".repeat(4));
+        let shown = around(&line, &words(&["adr"]), 60);
+        assert!(shown.contains("adr"), "window missed the term: {shown:?}");
+    }
+
+    #[test]
+    fn the_window_moves_by_characters_of_the_original_line() {
+        let line = format!("{}adr", "İ".repeat(70));
+        assert_eq!(around(&line, &words(&["adr"]), 60), format!("…{}adr", "İ".repeat(10)));
+    }
+
+    // ------------------------------------------------------------ search_terms
+
+    /// Command-line arguments as `env::args()` would hand them over, the
+    /// program's own path first.
+    fn args(list: &[&str]) -> impl Iterator<Item = String> {
+        list.iter().map(|a| a.to_string()).collect::<Vec<_>>().into_iter()
+    }
+
+    #[test]
+    fn the_programs_own_path_is_not_a_search_term() {
+        assert_eq!(search_terms(args(&["target\\debug\\agentdocs.exe", "adr"])), vec!["adr"]);
+    }
+
+    #[test]
+    fn search_terms_are_lowercased() {
+        // Without this, `agentdocs ADR` finds nothing anywhere and exits 0.
+        assert_eq!(search_terms(args(&["agentdocs", "ADR", "검증"])), vec!["adr", "검증"]);
+    }
+
+    #[test]
+    fn no_arguments_means_no_search_terms() {
+        assert!(search_terms(args(&["agentdocs"])).is_empty());
+    }
+
+    #[test]
+    fn a_quoted_phrase_stays_one_term() {
+        assert_eq!(search_terms(args(&["agentdocs", "Error Handling"])), vec!["error handling"]);
+    }
+
+    #[test]
+    fn an_empty_or_blank_argument_is_not_a_term() {
+        // Found in review: `agentdocs "" adr` showed `1: ---` as the reason
+        // for every match, and `agentdocs ""` kept every Entry, because "" is
+        // inside every text.
+        assert_eq!(search_terms(args(&["agentdocs", "", "adr", "   "])), vec!["adr"]);
+        assert!(search_terms(args(&["agentdocs", ""])).is_empty());
+    }
+
+    // ----------------------------------------------------------------- listing
+
+    /// Two Entries: `alpha` mentions ADR in its first line, `beta` does not.
+    fn two_entries(unreadable: usize) -> Walked {
+        let mut alpha = entry_with("alpha", Some("ADR notes\nmore"));
+        alpha.description = Some("first".to_string());
+        let beta = entry_with("beta", Some("nothing here"));
+        Walked { entries: vec![alpha, beta], unreadable }
+    }
+
+    #[test]
+    fn without_terms_the_listing_is_the_one_printed_before_m4() {
+        let walked = two_entries(1);
+        assert_eq!(
+            listing("rules", &walked, &words(&[])),
+            vec![
+                "  rules:2 (1 unreadable)".to_string(),
+                row(&walked.entries[0]),
+                row(&walked.entries[1]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_search_shows_what_it_kept_out_of_the_whole_and_why() {
+        let walked = two_entries(0);
+        assert_eq!(
+            listing("rules", &walked, &words(&["adr"])),
+            vec![
+                "  rules:1/2".to_string(),
+                row(&walked.entries[0]),
+                "      1: ADR notes".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_search_that_keeps_nothing_still_shows_the_source() {
+        let walked = two_entries(1);
+        assert_eq!(listing("rules", &walked, &words(&["zzz"])), vec!["  rules:0/2 (1 unreadable)"]);
+    }
+
+    #[test]
+    fn the_matched_line_is_brought_into_view() {
+        let long = format!("{} adr tail", "x".repeat(100));
+        let walked = Walked { entries: vec![entry_with("gamma", Some(&long))], unreadable: 0 };
+        let lines = listing("docs", &walked, &words(&["adr"]));
+        assert_eq!(lines[2], "      1: …xxxxxxxxx adr tail");
     }
 
     // -------------------------------------------------------------------links

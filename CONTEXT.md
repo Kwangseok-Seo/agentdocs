@@ -32,6 +32,10 @@ _Avoid_: main file, index, root document
 Something a Walk found but could not look at — an entry the system would not describe, or a directory that would not open.
 _Avoid_: error, failure, broken
 
+**Hit**:
+The first line of an Entry's text that holds any of the words being searched for.
+_Avoid_: snippet, match line, excerpt
+
 ## Relationships
 
 - A **Source** has exactly one **Scope**
@@ -40,6 +44,7 @@ _Avoid_: error, failure, broken
 - An **Entry** is either a single file or one **Bundle**
 - A **Bundle** has exactly one **Lead** and zero or more supporting files
 - A **Walk** reports the **Entries** it found and how many things it found **Unreadable**
+- An **Entry** kept by a search has at most one **Hit**; one kept for its name alone has none
 
 ## Example dialogue
 
@@ -61,4 +66,5 @@ _Avoid_: error, failure, broken
 - "docs" was used both as a **Source** name and as a general word for documentation. Resolved: `docs` names the **Source** backed by a repository's `docs/` directory; otherwise write "documentation".
 - "traversal" and "walk" were both used for the rule that decides what an **Entry** is inside a **Source** — ADR-0003 writes "traversal rule" in prose. Resolved: the term is **Walk**.
 - "unreadable" was used both for a thing a **Walk** could not open and for anything a **Walk** passes over. Resolved: **Unreadable** is only what the Walk *could not look at*. What it looked at and rejected — a non-Markdown file, a link it will not follow — is skipped, and skipping is not counted.
+- The line printed under a row during a search was called the "matched line", the "hit line", the "why line" and a "snippet". Resolved: it is the **Hit**.
 - The relationship above says a **Bundle** has exactly one **Lead**, yet a directory with no Lead is still listed. Resolved: the relationship states the well-formed shape; a directory in a Bundle **Source** that is missing its **Lead** is a malformed **Bundle**, and it is shown rather than hidden, because what is on disk is what the viewer reports.

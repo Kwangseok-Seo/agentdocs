@@ -13,18 +13,17 @@ So this repository is not a finished codebase. It is a **record of something gro
 
 ## Status
 
-**M3 complete** — the binary discovers its sources, walks each one by its own rule, reads a name and description out of each entry's frontmatter, and **says what it could not read instead of reporting zero**. No screen yet.
+**M4 complete** — the binary discovers its sources, walks each one by its own rule, reads a name and description out of each entry's frontmatter, **says what it could not read instead of reporting zero**, and **searches**. No screen yet.
 
 ```
-$ cd ~/projects/cli-maker && agentdocs        # abridged: the real output is 121 lines
+$ cd ~/projects/cli-maker && agentdocs        # abridged: the real output is 115 lines
 GLOBAL
-  skills:7
+  skills:6
     dream                            Memory consolidation pass (auto-memory 시스템의 …
     get-api-docs                     Use this skill to get documentation for thir…
     grill-with-docs                  Grilling session that challenges your plan a…
-    session-retro                    세션 회고 — 직전 발행 rule 의 재사용 성적을 먼저 보이고, 4축(잘한것·…
     ...
-  rules:19
+  rules:14
     adr-context-format               -
     adr-rationale-realization        -
     ...
@@ -56,6 +55,27 @@ When something on disk is broken — and for a program that reads other people's
 
 Through M2 the first of those lines read `0`, indistinguishable from the second, because a failure that could not be expressed in the return type had already been discarded before anything could print it ([ADR-0006](docs/adr/0006-unreadable-is-counted-not-dropped.md)). A directory link is now listed but never walked into — which is what stops a junction pointing at its own parent from turning a two-file directory into 128 rows ([ADR-0007](docs/adr/0007-links-are-listed-not-followed.md)).
 
+Give it words and it keeps only the entries that contain every one of them — in the name or anywhere in the file, ignoring case — counts what it kept out of the whole, and prints under each row the first line that holds a word, so you can see why it is there:
+
+```
+$ agentdocs adr 검증                           # abridged: 21 rows
+GLOBAL
+  skills:0/6
+  rules:5/14
+    adr-context-format               -
+      1: # ADR & CONTEXT Format Authority
+    ...
+PROJECT C:\Users\adman\projects\cli-maker
+  root md:2/3
+    CLAUDE                           -
+      23: …성)은 `docs/adr/0001-runtime-interpreter-architecture.md`.
+    ...
+  docs:14/80
+    ...
+```
+
+When the word sits further along a long line than fits, that line is shown from just before the word. The rules on this machine have no frontmatter and are written in Korean, which is why the search reads whole files: over names alone, `검증` finds 0 entries; over the text, 39 ([M4](docs/learn/milestones/M4.md)).
+
 ## Where it is headed
 
 ```
@@ -84,7 +104,7 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 | **M1** ✅ | Source discovery — 5 global sources + the current repository | **ownership & borrowing**, `String` vs `&str`, `Vec`, `std::fs`, recursion |
 | **M2** ✅ | Domain model + frontmatter parsing | `struct`, **`enum` + `match`**, `Option`, `impl` |
 | **M3** ✅ | Error handling + first tests | **`Result`, the `?` operator**, `#[cfg(test)]`, entry vs target |
-| **M4** | Search and filtering (still CLI) | **iterators & closures**, traits |
+| **M4** ✅ | Search and filtering (still CLI) | **iterators & closures**, traits |
 | **M5** | TUI skeleton — three panes, key navigation | external crates, **the event loop**, modules |
 | **M6** | Markdown rendering | **lifetimes**, slices |
 | **M7** | Bundle tree (expand / collapse) | recursive data structures, `Box` |

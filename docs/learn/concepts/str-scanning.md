@@ -90,12 +90,29 @@ fn short(s: &str, width: usize) -> String {
 }
 ```
 
+## A lowercase copy is not the same length
+
+Case-insensitive search lowercases both sides, which quietly produces a second string — and a position found in that copy is a position in the copy, not in the original:
+
+```
+"İ": 1 char / 2 bytes  ->  "i\u{307}": 2 chars / 3 bytes
+"A": 1 char / 1 bytes  ->  "a": 1 chars / 1 bytes
+"Σ": 1 char / 2 bytes  ->  "σ": 1 chars / 2 bytes
+"ΣΑΣ".to_lowercase()   ->  "σας"          the last Σ depends on its neighbours
+```
+
+The dotted capital I becomes an `i` and a combining dot: one character turns into two, and two bytes into three. So in M4's `around` a byte offset found by searching the lowercase line is walked back to the original **one character at a time**, adding up how long each character becomes once lowercased (`chars_before`). Summing per character is exact for byte lengths even with `Σ`, whose lowercase depends on context but is two bytes either way.
+
 ## Pitfalls hit — the demonstration that proved nothing
 
 The first attempt to show this panic used `&s[..10]` on a Korean string, and it **printed happily**: byte 10 landed on a boundary by luck. Had the point been made from that run, the conclusion drawn would have been the opposite of the truth.
 
 Which is the shape of the bug itself. `&s[..n]` is not reliably wrong — it is wrong for *some* strings at *some* offsets, so it survives every test written with English text and fails the first time a description arrives in another language. Four of the descriptions in this machine's corpus are Korean.
 
+## Pitfalls hit — converting bytes to characters in the wrong string
+
+M4's first `around` did convert its byte offsets to characters, as the section above demands — but it counted the characters of the **lowercase copy** and then skipped that many in the original. Every test passed, because in every test the two strings had the same length. A reviewer fed it forty `İ`s before the term: the window skipped past the end of a 48-character line and showed `…` with nothing after it, and with a different count it landed in filler text that did not contain the term at all — a wrong reason for a match, at exit 0. The byte-versus-character lesson had been learned; the assumption hiding one step further along had not been named.
+
 ## Related
 
-[[owned-vs-borrowed-pairs]] · [[option-and-match]] · [[vec]] · [[macros-and-formatting]]
+[[owned-vs-borrowed-pairs]] · [[option-and-match]] · [[vec]] · [[macros-and-formatting]] · [[iterators]]

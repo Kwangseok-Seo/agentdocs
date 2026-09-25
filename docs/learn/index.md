@@ -18,10 +18,13 @@ A wiki of the **Rust and tooling knowledge** accumulated while building agentdoc
 - [[enums-and-data]] — variants that carry data, illegal states made unwritable, and why the tag is free
 - [[impl-and-methods]] — associated function vs method, `Self`, `&mut self`, and borrows that end early
 - [[vec]] — growth and reallocation, the three ways to iterate, and `&[T]`
-- [[str-scanning]] — `lines`, `split_once`, `peek`, and why cutting by bytes is a lottery
+- [[str-scanning]] — `lines`, `split_once`, `peek`, why cutting by bytes is a lottery, and why a lowercase copy is not the same length
 - [[result-and-errors]] — `Result`, the four ways an error can end, `?` and why propagation is contagious
 - [[file-types-and-links]] — asking about the entry or about the target, and the two opposite bugs one boolean produced
 - [[testing]] — `#[cfg(test)]`, fixtures without a crate, and why a green suite proves nothing until you break the code
+- [[iterators]] — one required method and 75 free ones, adapters vs consumers, laziness, stopping early, `filter_map`
+- [[closures]] — functions that capture, the three ways they hold what they use, and `Fn` / `FnMut` / `FnOnce`
+- [[traits]] — promises with default bodies, `derive` as a compiler-written `impl`, bounds and `impl Trait`
 
 ## Milestones (`milestones/`)
 
@@ -31,3 +34,4 @@ The journey log: what was built, which concepts it required, and which pitfalls 
 - [M1](milestones/M1.md) — source discovery
 - [M2](milestones/M2.md) — domain model and frontmatter
 - [M3](milestones/M3.md) — error handling and the first tests
+- [M4](milestones/M4.md) — search
