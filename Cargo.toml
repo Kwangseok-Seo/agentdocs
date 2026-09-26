@@ -11,3 +11,4 @@ keywords = ["tui", "markdown", "viewer", "ai-agents", "skills"]
 categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
+ratatui = "0.30.0"

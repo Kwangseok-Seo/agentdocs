@@ -2,10 +2,12 @@ mod entry;
 mod frontmatter;
 mod listing;
 mod source;
+mod tui;
 #[cfg(test)]
 mod testutil;
 
 use std::env;
+use std::io::{self, IsTerminal};
 
 use crate::listing::{listing, reason};
 use crate::source::{Scope, Source, Walk, find_project_root};
@@ -25,11 +27,18 @@ fn search_terms(args: impl Iterator<Item = String>) -> Vec<String> {
         .collect()
 }
 
-fn main() {
+fn main() -> io::Result<()> {
     let home = env::home_dir();
     let cwd = env::current_dir().ok();
 
     let terms = search_terms(env::args());
+
+    // Provisional until slice 4 settles it: only a bare `agentdocs` typed at a
+    // terminal opens the screen. With words, or with output going to a pipe or
+    // a file, the listing is printed exactly as before.
+    if terms.is_empty() && io::stdout().is_terminal() {
+        return ratatui::run(|terminal| tui::run(terminal));
+    }
 
     let mut sources = Vec::new();
     if let Some(home) = &home {
@@ -83,7 +92,8 @@ fn main() {
     if !project_shown {
         println!("{project_header}");
     }
-    
+
+    Ok(())
 }
 
 #[cfg(test)]
