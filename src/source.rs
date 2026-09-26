@@ -113,7 +113,7 @@ impl Source {
 }
 
 pub fn find_project_root(start: &Path, home: &Path) -> Option<PathBuf> {
-    // At or above the home directory there is no project
+    // At the home directory, or anywhere not below it, there is no project
     if start == home || !start.starts_with(home) {
         return None;
     }

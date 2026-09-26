@@ -60,6 +60,10 @@ let _last = Guard("end of scope");  // bound: dropped when the scope ends
 
 The leading underscore on `_last` only silences the unused-variable warning ([[mutability]]); the value is still owned and still lives to the end of the block. The probe needed exactly that, and declared `_last` **before** `terminal` so that, dropping in reverse, it logged after the terminal was gone.
 
+## Pitfalls hit
+
+- **After one deliberate panic the mouse stayed captured in the shell.** The probe above was built the next session to find out why: on the normal path and on the panic path alike, the hook ran, `DisableMouseCapture` returned `Ok`, and the console mode came back to the value it started at. Three more panics, two of them with the very binary that had shown it, did not reproduce it. The cause is unknown, so nothing on this page is offered as the explanation; if it shows again, the probe is how that run gets measured.
+
 ## Related
 
 [[traits]] · [[ownership]] · [[event-loop]] · [[result-and-errors]] — a panic is for a bug; a failure the caller should handle is a `Result`

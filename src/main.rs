@@ -201,6 +201,18 @@ mod tests {
     }
 
     #[test]
+    fn two_project_sources_share_one_project_heading() {
+        // `main` pushes two project Sources, `root md` and then `docs`; with one,
+        // a heading written before every project Source looks the same.
+        let mut sources = two_sources("main-twoproject");
+        let root = scratch("main-twoproject-root");
+        sources.insert(1, Source::new("root md", root, Scope::Project, Walk::MarkdownFiles));
+
+        let lines = written(&sources);
+        assert_eq!(lines[lines.len() - 3..], ["PROJECT here", "  root md:0", "  docs:(missing)"]);
+    }
+
+    #[test]
     fn with_no_project_source_the_project_heading_comes_last() {
         let mut sources = two_sources("main-noproject");
         sources.pop();

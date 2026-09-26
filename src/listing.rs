@@ -325,8 +325,8 @@ mod tests {
             listing("rules", &walked, &words(&[])),
             vec![
                 "  rules:2 (1 unreadable)".to_string(),
-                row(&walked.entries[0]),
-                row(&walked.entries[1]),
+                format!("    {:<32} first", "alpha"),
+                format!("    {:<32} -", "beta"),
             ]
         );
     }
@@ -338,7 +338,7 @@ mod tests {
             listing("rules", &walked, &words(&["adr"])),
             vec![
                 "  rules:1/2".to_string(),
-                row(&walked.entries[0]),
+                format!("    {:<32} first", "alpha"),
                 "      1: ADR notes".to_string(),
             ]
         );
