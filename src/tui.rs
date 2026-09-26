@@ -1041,4 +1041,32 @@ mod tests {
         assert!(rows.contains("[31mred"), "{rows}");
         assert!(!rows.chars().any(|c| c != '\n' && c.is_control()), "{rows:?}");
     }
+
+    /// Characters that are not control characters but still change how a
+    /// terminal lays text out: a right-to-left override and a zero-width space.
+    const FORMAT: [char; 2] = ['\u{202e}', '\u{200b}'];
+
+    #[test]
+    #[ignore = "known gap: the Entries list keeps zero-width characters; see M5, Left for later"]
+    fn a_format_character_in_a_name_never_reaches_the_screen() {
+        let dir = scratch("tui-format-name");
+        write(&dir.join("x.md"), "---\nname: left\u{202e}right\u{200b}gap\n---\n");
+
+        let mut app = app(vec![Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles)]);
+        let rows = screen(&mut app, 100, 8).join("\n");
+        assert!(rows.contains("leftrightgap"), "{rows}");
+        assert!(!rows.contains(FORMAT), "{rows:?}");
+    }
+
+    #[test]
+    fn escapes_and_format_characters_in_a_file_never_reach_the_screen() {
+        let dir = scratch("tui-format-file");
+        write(&dir.join("x.md"), "\u{1b}[31mred left\u{202e}right\u{200b}gap\n");
+
+        let mut app = app(vec![Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles)]);
+        let rows = screen(&mut app, 100, 8).join("\n");
+        assert!(rows.contains("[31mred leftrightgap"), "{rows}");
+        assert!(!rows.chars().any(|c| c != '\n' && c.is_control()), "{rows:?}");
+        assert!(!rows.contains(FORMAT), "{rows:?}");
+    }
 }

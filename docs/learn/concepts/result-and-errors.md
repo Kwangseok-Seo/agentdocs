@@ -66,6 +66,21 @@ md_files now returns io::Result<..>
 
 In a language with exceptions the middle functions would say nothing and pass the error through untouched. Here every one of them is made to answer. The discomfort is the mechanism: `agents:0` existed because a middle function was allowed to stay silent.
 
+## An error that is not a failure: the reader left
+
+`println!` does not return a `Result`. When writing fails it panics — `failed printing to stdout` — which is the right trade for a quick program and the wrong one for the listing. `agentdocs | Select-Object -First 5` (or `| head`) reads what it wants and closes the pipe, the next line cannot be written, and until M5 that meant a panic after perfectly good output. Reading the first 40 bytes and closing the pipe ended in exit 101 with the panic on stderr.
+
+`writeln!(out, …)` does the same writing and hands the failure back as an `io::Result`, so `?` can carry it up to a place that decides what it means:
+
+```rust
+match write_listing(out, global, project, sources, terms) {
+    Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+    other => other,
+}
+```
+
+It is the table at the top in two functions: `write_listing` **propagates** every failure with `?`, and `print_listing` **handles** the one it can decide about. The guard after the pattern (`if …`) picks that kind of `Err` out: a reader that left has seen all it asked for, so that is success. `other => other` passes everything else through untouched — a disk that is full is still an error. The same test now ends in exit 0 with nothing on stderr. On Windows the failure arrives as OS error 232, "the pipe is being closed", and Rust files it under `BrokenPipe`; that it does is shown by the exit code, since any other kind would have come back as an error.
+
 ## Turning a reason into words
 
 `e.kind()` and `e` are not interchangeable. Measured on this machine:
@@ -108,4 +123,4 @@ This is a swallow, chosen on purpose: `env::home_dir()` returns a bare `Option` 
 
 ## Related
 
-[[option-and-match]] · [[fs-read-dir]] · [[file-types-and-links]] · [[testing]] · [[owned-vs-borrowed-pairs]]
+[[option-and-match]] · [[fs-read-dir]] · [[file-types-and-links]] · [[testing]] · [[owned-vs-borrowed-pairs]] · [[drop-and-unwinding]]

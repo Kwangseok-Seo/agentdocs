@@ -79,7 +79,14 @@ Five of those rows did not exist until a reviewer pointed out that **the entire 
 - **Tests can be written that pass on broken code.** The mutation table above is the only reason that claim is not being made here on faith; eight of the nine mutations were caught, one was not, and which was which was not predictable by reading.
 - **A missing test is invisible to the tests.** The mutation battery only asks about behaviour somebody thought to mutate. The link surface had *no* coverage, and no amount of running the suite would have said so — it took a reviewer grepping for `symlink` and finding one occurrence, the production line itself.
 - **Code that only `main` calls cannot be tested.** The control-character filter was correct and the name column still leaked, because the filtering happened in a `println!` argument inside `main`. Pulling the line into `fn row(entry: &Entry) -> String` — one function, no new behaviour — is the whole difference between a claim and a test.
+- **A test that passes because the answer was already on screen.** M5's "clicking a scope heading selects nothing" first clicked the heading directly above the Source that was already selected, so a click that wrongly selected the row below still left the selection where the test expected it. A mutation passed it; moving each heading above a Source that was *not* selected made it red.
+- **A test that feeds an input once, where the real thing feeds it many times.** M5's "a drag that began outside the preview selects nothing" sent one drag event and passed. A mutation that started a selection on the first drag event passed it too, since a real drag reports every cell it crosses and the test stopped after one. Sending two moves turned that mutation red.
+- **A guard tested on the input the author of the guard imagined.** Copying skipped a drag over blanks by checking `text.is_empty()`, and the test dragged within one blank row. The author dragged across two in a real terminal: the rows joined into `"\n"`, which is not empty, and "copied to clipboard" appeared. The rule had been written as *nothing but blanks* and coded as *the empty string*; `!text.trim().is_empty()` is the rule as written, and the two-row case is now in the test.
+
+## A screen without a terminal
+
+M5's screen is tested the way the listing is: by keeping judgement out of the parts that need the real thing. ratatui's `TestBackend` is a terminal made of memory, so a test can draw a frame at any size and read back every cell — its symbol, its colour, whether it is reversed. The loop hands keys and clicks to methods on `App` instead of acting on them itself, so a test can press `j` or click a cell without an event ever arriving. And the methods that depend on the time are handed the time, `release(now)` and `tick(now)`, so "two seconds later" is `start + COPIED_FOR` rather than a two-second wait. What stays outside — the loop's own wiring — is a few lines, checked in a real terminal.
 
 ## Related
 
-[[result-and-errors]] · [[fs-read-dir]] · [[file-types-and-links]] · [[structs]]
+[[result-and-errors]] · [[fs-read-dir]] · [[file-types-and-links]] · [[structs]] · [[event-loop]]

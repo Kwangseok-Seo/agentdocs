@@ -30,11 +30,14 @@ Goal 2 is the constraint that does not show up in the code. The workflow below e
 - **Discovery.** Global sources are always listed wherever the binary runs; the project block follows the repository that contains the current directory. See `docs/adr/0002-*.md`.
 - **Source definitions are data**, not code branches — including *how* each source is walked. Today the table holds Claude Code paths only. See `docs/adr/0003-*.md`.
 - **Project root** is found by walking up for a marker, falling back to the current directory. See `docs/adr/0004-*.md`.
-- **TUI framework**: ratatui (+ crossterm backend), arriving in M5. Until then the core is verified through stdout.
+- **TUI framework**: ratatui (+ crossterm backend).
+- **Screen or listing.** A bare `agentdocs` at a terminal opens the screen; words, or stdout that is not a terminal, print the listing. See `docs/adr/0008-*.md`. The core is still verified through the listing.
 
 ## Layout (grow it as needed — never pre-create empty directories)
 
-- `src/main.rs` — entry point.
+- `src/main.rs` — the command line, the source table, and the choice between screen and listing.
+- `src/source.rs` · `src/entry.rs` · `src/frontmatter.rs` — where to look, what one Entry is, how fields are read.
+- `src/listing.rs` — the lines of the listing. `src/tui.rs` — the screen. `src/testutil.rs` — fixtures shared by the tests.
 - `docs/adr/` — architecture decision records.
 - `docs/learn/` — the Rust learning wiki (`index.md` + `concepts/` + `milestones/`).
 - `CONTEXT.md` — domain glossary (glossary only).

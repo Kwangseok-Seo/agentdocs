@@ -86,11 +86,58 @@ alloc::vec::into_iter::IntoIter<alloc::string::String>
 
 A trait earns its place when **two or more types** must keep the same promise. Everything searched in M4 is an `Entry`; a `Searchable` trait with one implementor would be an abstraction with nothing on its other side. So this milestone uses traits only from the outside: deriving them, and handing closures to functions bounded by them.
 
+## A trait's methods exist only where the trait is in scope
+
+`io::stdout().is_terminal()` compiles only with `use std::io::IsTerminal;` at the top of the file: `is_terminal` is not a method of `Stdout` itself but of the trait `IsTerminal`, which `Stdout` implements. M5 met the same rule again in `STANDARD.encode(text)` — `encode` belongs to the trait `base64::Engine`. Remove that `use` and the call stops compiling:
+
+```
+error[E0599]: no method named `encode` found for struct `GeneralPurpose` in the current scope
+    |
+    = help: items from traits can only be used if the trait is in scope
+```
+
+So the same file has `use unicode_width::UnicodeWidthStr;` for `symbol.width()` on a `&str`, and `use std::io::Write;` for `out.write_all(…)` and `writeln!`. Each line looks unused — nothing in the file names the trait — and each is what makes a method exist. The rule keeps two crates that give the same type a method of the same name from colliding everywhere at once: only a file that imports one of them sees it ([[external-crates]]).
+
+## Keeping a standard trait's promise: `Write`
+
+To test what the listing does when a pipe closes early, M5 needed something to write into that fails on cue. `std::io::Write` requires two methods and supplies the rest:
+
+```rust
+impl Write for StopsAfter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.room == 0 {
+            return Err(io::Error::from(self.kind));
+        }
+        let taken = buf.len().min(self.room);
+        self.room -= taken;
+        Ok(taken)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+```
+
+`write_all`, and `write_fmt` — which `writeln!` calls — are default bodies written in terms of `write`, the way `Iterator`'s 75 methods are written in terms of `next`. A function taking `out: &mut impl Write` therefore accepts the real stdout, a `Vec<u8>`, and this test double alike.
+
+## A derived order compares fields in the order they are declared
+
+`#[derive(PartialOrd, Ord)]` compares the first field, and looks at the next only on a tie. ratatui's `Position` derives both and declares `x` before `y`, so it orders by column first:
+
+```
+Position { x: 5, y: 1 } < Position { x: 3, y: 2 }   = false
+(1, 5) < (2, 3)          — the same two, as (y, x)  = true
+```
+
+A drag's two ends have to be put in reading order — row first — so M5 compares `(a.y, a.x)` tuples instead of the positions. Tuples compare element by element in the order written, which puts the choice in the caller's hands.
+
 ## Pitfalls hit
 
 - **An empty `impl` block compiles, silently.** Deleting `Frontmatter::none()` left `impl Frontmatter { }` holding nothing but a blank line. The build reported no warning; it was found by reading the diff.
+- **"Methods need no `use`" is half a rule.** Splitting `main.rs` into modules in M5, the assistant said a method can be called without importing anything, since it hangs off the value. That holds for a type's own methods, written in `impl Type`. Two slices later `is_terminal()` failed with E0599 until `IsTerminal` was imported, and the rule was corrected: a method from a trait needs the trait in scope.
 - **A derive nothing uses.** `Frontmatter` gained `#[derive(Debug, Default)]` when only `Default` was needed; nothing prints a `Frontmatter`. It costs nothing at runtime, but in this codebase a derive marks that something relies on it — M3 added `Debug` only where `unwrap_err()` demanded it — so the extra one was removed.
 
 ## Related
 
-[[iterators]] · [[closures]] · [[structs]] · [[enums-and-data]] · [[testing]]
+[[iterators]] · [[closures]] · [[structs]] · [[enums-and-data]] · [[testing]] · [[external-crates]] · [[drop-and-unwinding]]

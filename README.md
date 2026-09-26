@@ -13,10 +13,30 @@ So this repository is not a finished codebase. It is a **record of something gro
 
 ## Status
 
-**M4 complete** — the binary discovers its sources, walks each one by its own rule, reads a name and description out of each entry's frontmatter, **says what it could not read instead of reporting zero**, and **searches**. No screen yet.
+**M5 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries, and the selected entry's file. `j`/`k` or the arrows move, `Tab` switches pane, a click selects, and **dragging across the preview copies the text** to the clipboard. The file is shown as it is on disk; rendering the Markdown is M6.
 
 ```
-$ cd ~/projects/cli-maker && agentdocs        # abridged: the real output is 115 lines
+$ cd ~/projects/cli-maker && agentdocs        # a 100 x 14 terminal
+┌Sources───────────────────┐┌Entries───────────────────────┐┌Preview───────────────────────────────┐
+│GLOBAL                    ││dream                         ││---                                   │
+│  skills:6                ││get-api-docs                  ││name: dream                           │
+│  rules:14                ││grill-with-docs               ││description: "Memory consolidation    │
+│  agents:1                ││session-retro                 ││pass (auto-memory 시스템의 reflective │
+│  commands:1              ││synced                        ││reorganize). 최근 transcripts·기존    │
+│  agents/skills:1         ││to-html                       ││memory 파일을 종합해 새 신호를 topic  │
+│PROJECT cli-maker         ││                              ││파일에 병합하고, 모순/노후 항목을     │
+│  root md:3               ││                              ││정리하고, 인덱스를 다듬는다. Args:    │
+│  docs:80                 ││                              ││(없음)=현재 프로젝트 memory;          │
+│                          ││                              ││`user`=user-scope                     │
+│                          ││                              ││memory(`~/.claude/memory/`);          │
+└──────────────────────────┘└──────────────────────────────┘└──────────────────────────────────────┘
+ j/k ↓/↑ move   tab pane   click select   drag copy   q quit
+```
+
+With words, or with its output going to a pipe or a file, it prints the **listing** instead — which is also what an AI agent running it from its own shell gets ([ADR-0008](docs/adr/0008-screen-for-a-bare-command-at-a-terminal.md)). The listing is where M1–M4 happened: the binary discovers its sources, walks each one by its own rule, reads a name and description out of each entry's frontmatter, **says what it could not read instead of reporting zero**, and **searches**.
+
+```
+$ cd ~/projects/cli-maker && agentdocs | more   # abridged: the real output is 115 lines
 GLOBAL
   skills:6
     dream                            Memory consolidation pass (auto-memory 시스템의 …
@@ -42,7 +62,7 @@ PROJECT C:\Users\adman\projects\cli-maker
 
 The global block is identical wherever you run it; only the project block follows the current directory ([ADR-0002](docs/adr/0002-discovery-global-always-project-follows-cwd.md)). How each source is walked — one level of Markdown files, one level of directories, or a full recursive descent — is a column of the source table rather than a branch in the code ([ADR-0003](docs/adr/0003-source-table-claude-first.md)).
 
-That output is already longer than a terminal window, which is the argument for the screen that arrives in M5.
+That output is longer than a terminal window, which was the argument for the screen above.
 
 When something on disk is broken — and for a program that reads other people's directories, broken is the normal case rather than an edge one — the row says so instead of quietly rounding down:
 
@@ -105,10 +125,10 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 | **M2** ✅ | Domain model + frontmatter parsing | `struct`, **`enum` + `match`**, `Option`, `impl` |
 | **M3** ✅ | Error handling + first tests | **`Result`, the `?` operator**, `#[cfg(test)]`, entry vs target |
 | **M4** ✅ | Search and filtering (still CLI) | **iterators & closures**, traits |
-| **M5** | TUI skeleton — three panes, key navigation | external crates, **the event loop**, modules |
+| **M5** ✅ | TUI skeleton — three panes, key and mouse navigation, drag to copy | external crates, **the event loop**, modules, `Drop` |
 | **M6** | Markdown rendering | **lifetimes**, slices |
 | **M7** | Bundle tree (expand / collapse) | recursive data structures, `Box` |
-| **M8** | Code block highlighting + scrolling | `syntect`, state management |
+| **M8** | Code block highlighting + scrolling — the wheel scrolls the preview, a drag can select past the rows in view | `syntect`, state management |
 | **M9** | `$EDITOR` delegation + file watching | `std::process`, **threads & channels** |
 | **M10** | Config file (extra sources, ordering) | `serde`, TOML, `thiserror` |
 | **M11** | Distribution — multi-platform binaries, install scripts, CI | release profiles, cross-compilation |

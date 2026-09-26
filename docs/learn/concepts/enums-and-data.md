@@ -76,6 +76,20 @@ Option<u8>       2 byte
 
 `EntryKind` matching `Option<PathBuf>` exactly is a **niche optimization**: the pointer inside a `PathBuf` can never be null, so the compiler spends those unused bit patterns on `File` and on `None` instead of carrying a separate tag. `Option<u8>` needs two bytes because a `u8` has no spare pattern to borrow.
 
+## The same idea for something that changes: a phase
+
+M5's drag selection goes through three stages: the button is down but has not moved off its cell, it has moved and the cells between are highlighted, it has been let go and the text copied. Two booleans, `dragged` and `done`, would make four combinations, one of them — done without ever dragging — meaningless. An enum makes three:
+
+```rust
+enum Phase {
+    Pressed,
+    Dragging,
+    Done,
+}
+```
+
+Each event moves it along one edge: a drag turns `Pressed` into `Dragging`, letting go turns `Dragging` into `Done` — and a `Pressed` let go is a plain click, so it is dropped rather than finished. Drawing asks one question, `phase != Phase::Pressed`, to know whether to highlight.
+
 ## Pitfalls hit — variant names must exclude each other
 
 The first names proposed for the three [[structs]] traversal rules were `entries`, `bundleDirs`, `LeadDirs`. Two problems, both worth generalising:
@@ -98,4 +112,4 @@ Types and variants are `UpperCamelCase`; fields, functions and variables are `sn
 
 ## Related
 
-[[structs]] · [[option-and-match]] · [[impl-and-methods]] · [[str-scanning]]
+[[structs]] · [[option-and-match]] · [[impl-and-methods]] · [[str-scanning]] · [[event-loop]]

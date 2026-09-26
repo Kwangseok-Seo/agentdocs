@@ -24,7 +24,11 @@ A wiki of the **Rust and tooling knowledge** accumulated while building agentdoc
 - [[testing]] — `#[cfg(test)]`, fixtures without a crate, and why a green suite proves nothing until you break the code
 - [[iterators]] — one required method and 75 free ones, adapters vs consumers, laziness, stopping early, `filter_map`
 - [[closures]] — functions that capture, the three ways they hold what they use, and `Fn` / `FnMut` / `FnOnce`
-- [[traits]] — promises with default bodies, `derive` as a compiler-written `impl`, bounds and `impl Trait`
+- [[traits]] — promises with default bodies, `derive` as a compiler-written `impl`, bounds and `impl Trait`, why a trait's methods need the trait in scope, and a derived order
+- [[modules]] — a file is a module once declared, private until `pub` one wall at a time, `crate::` and `super::` paths
+- [[external-crates]] — crate vs package vs module, a version as a range, what `rust-version` holds back, and what one dependency costs
+- [[event-loop]] — draw everything, wait, change the state; raw mode, the alternate screen, mouse capture, and waking up without an event
+- [[drop-and-unwinding]] — what runs when a value goes, what a panic skips, why the screen needs a hook, and `let _` vs `let _name`
 
 ## Milestones (`milestones/`)
 
@@ -35,3 +39,4 @@ The journey log: what was built, which concepts it required, and which pitfalls 
 - [M2](milestones/M2.md) — domain model and frontmatter
 - [M3](milestones/M3.md) — error handling and the first tests
 - [M4](milestones/M4.md) — search
+- [M5](milestones/M5.md) — the screen
