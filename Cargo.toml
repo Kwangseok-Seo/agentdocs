@@ -11,4 +11,6 @@ keywords = ["tui", "markdown", "viewer", "ai-agents", "skills"]
 categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
+base64 = "0.22"
 ratatui = "0.30.0"
+unicode-width = "0.2"

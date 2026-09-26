@@ -1,6 +1,10 @@
-use std::io;
+use std::io::{self, Write};
 use std::panic;
+use std::time::{Duration, Instant};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
     MouseEventKind,
@@ -8,18 +12,26 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, List, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
+use unicode_width::UnicodeWidthStr;
 
 use crate::entry::Entry;
 use crate::listing::{failed, heading};
 use crate::source::{Scope, Source, Walked};
 
 /// The keys the screen answers to, shown along its bottom row.
-const KEYS: &str = " j/k ↓/↑ move   tab pane   click select   q quit";
+const KEYS: &str = " j/k ↓/↑ move   tab pane   click select   drag copy   q quit";
 
-/// What the screen shows, and which part of it is selected. Keys and clicks
-/// change it; drawing only reads it — and notes where it drew, for the clicks.
+/// What the bottom row says after a drag is copied, at its right end, and for
+/// how long — herdr's words and herdr's two seconds.
+const COPIED: &str = "copied to clipboard ";
+const COPIED_FOR: Duration = Duration::from_secs(2);
+
+/// What the screen shows, and which part of it is selected. Keys and the mouse
+/// change it; drawing only reads it — and notes where and what it drew, for
+/// the mouse.
 pub struct App {
     global: String,
     project: String,
@@ -31,6 +43,13 @@ pub struct App {
     areas: [Rect; 3],
     /// How far the Sources pane had to scroll, when too short for every row.
     source_offset: usize,
+    /// Text dragged over in the preview, from the moment the button goes down
+    /// there until the next click or key.
+    selection: Option<Selection>,
+    /// The whole screen as last drawn. Selected text is read back out of it.
+    drawn: Buffer,
+    /// Until when the bottom row says that a drag was copied.
+    copied_until: Option<Instant>,
 }
 
 /// The pane that j and k move in. The preview has nothing to move through
@@ -39,6 +58,61 @@ pub struct App {
 enum Pane {
     Sources,
     Entries,
+}
+
+/// Text dragged over in the preview, in screen cells. It works as herdr's
+/// does: the button going down only notes where a drag would start, nothing
+/// is selected until the pointer reaches another cell, and letting go keeps
+/// the highlight until the next click or key.
+#[derive(Clone, Copy)]
+struct Selection {
+    anchor: Position,
+    head: Position,
+    phase: Phase,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    /// Down, and not yet off the cell it went down on.
+    Pressed,
+    /// Off it: the cells in between are highlighted.
+    Dragging,
+    /// Let go after dragging: copied, and still highlighted.
+    Done,
+}
+
+impl Selection {
+    /// The selected cells of each row, top to bottom, as (row, first column,
+    /// last column). The first row runs from where the drag started to the
+    /// right edge, the rows between are whole, and the last row stops where
+    /// the drag ended — the way a terminal selects. Both ends are held inside
+    /// `inner`, which may have shrunk since, if the window was resized.
+    fn rows(&self, inner: Rect) -> Vec<(u16, u16, u16)> {
+        if inner.is_empty() {
+            return Vec::new();
+        }
+        let a = clamp(self.anchor, inner);
+        let b = clamp(self.head, inner);
+        // Row first, then column. `Position` can be compared too, but its
+        // derived order looks at x first — the wrong way round for reading.
+        let (start, end) = if (a.y, a.x) <= (b.y, b.x) { (a, b) } else { (b, a) };
+
+        (start.y..=end.y)
+            .map(|y| {
+                let first = if y == start.y { start.x } else { inner.x };
+                let last = if y == end.y { end.x } else { inner.right() - 1 };
+                (y, first, last)
+            })
+            .collect()
+    }
+}
+
+/// The cell inside `area` nearest to `at`. `area` must not be empty.
+fn clamp(at: Position, area: Rect) -> Position {
+    Position::new(
+        at.x.clamp(area.x, area.right() - 1),
+        at.y.clamp(area.y, area.bottom() - 1),
+    )
 }
 
 impl App {
@@ -62,15 +136,20 @@ impl App {
             focus: Pane::Sources,
             areas: [Rect::default(); 3],
             source_offset: 0,
+            selection: None,
+            drawn: Buffer::default(),
+            copied_until: None,
         }
     }
 
     /// Select what was clicked, and hand j and k to the pane it is in. A click
-    /// on a border, a scope heading, below the last row or in the preview
-    /// selects nothing.
+    /// on a border, a scope heading or below the last row selects nothing; one
+    /// inside the preview notes where a drag would start. Text selected earlier
+    /// is let go either way.
     fn click(&mut self, column: u16, row: u16) {
         let at = Position::new(column, row);
         let [sources, entries, _] = self.areas;
+        self.selection = None;
 
         if sources.contains(at) {
             self.focus = Pane::Sources;
@@ -89,12 +168,91 @@ impl App {
             if index < len {
                 self.entries.select(Some(index));
             }
+        } else if self.preview_inner().contains(at) {
+            self.selection = Some(Selection { anchor: at, head: at, phase: Phase::Pressed });
         }
     }
 
-    /// Change what is selected in answer to one key. Quitting is left to the
-    /// loop, so that everything here can be tested without a terminal.
+    /// The pointer moved with the button down. Only a drag that began inside
+    /// the preview selects; `Selection::rows` keeps it inside however far the
+    /// pointer goes.
+    fn drag(&mut self, column: u16, row: u16) {
+        let Some(selection) = &mut self.selection else { return };
+        if selection.phase == Phase::Done {
+            return;
+        }
+        selection.head = Position::new(column, row);
+        if selection.head != selection.anchor {
+            selection.phase = Phase::Dragging;
+        }
+    }
+
+    /// The button came up at `now`. After a drag, the text it covered, to be
+    /// copied — unless it covered nothing but blanks — and the bottom row says
+    /// so for a while; the highlight stays. After a plain click, nothing.
+    fn release(&mut self, now: Instant) -> Option<String> {
+        let mut selection = self.selection?;
+        if selection.phase != Phase::Dragging {
+            self.selection = None;
+            return None;
+        }
+        selection.phase = Phase::Done;
+        self.selection = Some(selection);
+
+        let text = Some(self.selected_text(selection)).filter(|text| !text.trim().is_empty())?;
+        self.copied_until = Some(now + COPIED_FOR);
+        Some(text)
+    }
+
+    /// Take "copied to clipboard" down once its time is up.
+    fn tick(&mut self, now: Instant) {
+        if self.copied_until.is_some_and(|until| now >= until) {
+            self.copied_until = None;
+        }
+    }
+
+    /// How much longer "copied to clipboard" has to show, if it is showing.
+    fn copied_left(&self, now: Instant) -> Option<Duration> {
+        self.copied_until.map(|until| until.saturating_duration_since(now))
+    }
+
+    /// The text under `selection`, read back out of the screen as drawn: one
+    /// line per row, without the blanks that pad a row out to the edge.
+    ///
+    /// A wide character — Korean takes two cells — is written into its first
+    /// cell, and ratatui blanks the cell it covers; that one is skipped. A wide
+    /// character counts as selected when its first cell is, which is also the
+    /// only cell whose highlight the terminal shows.
+    fn selected_text(&self, selection: Selection) -> String {
+        let inner = self.preview_inner();
+        let mut lines = Vec::new();
+
+        for (y, first, last) in selection.rows(inner) {
+            let mut line = String::new();
+            let mut covered = 0;
+            // From the left edge rather than from `first`: whether a cell is
+            // covered depends on the cells before it.
+            for x in inner.x..=last {
+                if covered > 0 {
+                    covered -= 1;
+                    continue;
+                }
+                let symbol = self.drawn[(x, y)].symbol();
+                covered = symbol.width().saturating_sub(1);
+                if x >= first {
+                    line.push_str(symbol);
+                }
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    /// Change what is selected in answer to one key. Any key lets go of
+    /// selected text. Quitting is left to the loop, so that everything here
+    /// can be tested without a terminal.
     fn handle(&mut self, key: KeyCode) {
+        self.selection = None;
         match key {
             KeyCode::Tab => {
                 self.focus = match self.focus {
@@ -171,6 +329,11 @@ impl App {
         self.walked()?.entries.get(self.entries.selected()?)
     }
 
+    /// The preview inside its border, as last drawn: where text can be dragged over.
+    fn preview_inner(&self) -> Rect {
+        self.areas[2].inner(Margin::new(1, 1))
+    }
+
     fn render(&mut self, frame: &mut Frame) {
         let [body, footer] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)])
             .areas(frame.area());
@@ -186,6 +349,11 @@ impl App {
         self.render_entries(frame, middle);
         self.render_preview(frame, right);
         frame.render_widget(KEYS, footer);
+        if self.copied_until.is_some() {
+            let copied = Line::from(COPIED).right_aligned().style(Style::new().fg(Color::Green));
+            frame.render_widget(copied, footer);
+        }
+        self.drawn = frame.buffer_mut().clone();
     }
 
     /// The Sources pane row by row: the scope headings, and under them a line
@@ -240,7 +408,8 @@ impl App {
         frame.render_stateful_widget(list, area, &mut self.entries);
     }
 
-    /// The selected Entry's file as it is on disk. Rendering the Markdown is M6.
+    /// The selected Entry's file as it is on disk, with any dragged-over text
+    /// shown reversed. Rendering the Markdown is M6.
     fn render_preview(&self, frame: &mut Frame, area: Rect) {
         let text = match self.entry() {
             None => "",
@@ -255,6 +424,15 @@ impl App {
             .wrap(Wrap { trim: false })
             .block(Block::bordered().title("Preview"));
         frame.render_widget(preview, area);
+
+        if let Some(selection) = self.selection {
+            if selection.phase != Phase::Pressed {
+                for (y, first, last) in selection.rows(self.preview_inner()) {
+                    let row = Rect::new(first, y, last - first + 1, 1);
+                    frame.buffer_mut().set_style(row, Style::new().reversed());
+                }
+            }
+        }
     }
 }
 
@@ -298,10 +476,35 @@ fn release_mouse_on_panic() {
     }));
 }
 
-/// Draw, wait for a key or a click, act on it — and again, until `q`.
+/// Put `text` on the clipboard with OSC 52: the terminal does the copying, so
+/// nothing appears on screen. A terminal that does not allow it ignores the
+/// request, and nothing here can tell.
+fn copy(text: &str) -> io::Result<()> {
+    let mut out = io::stdout();
+    out.write_all(osc52(text).as_bytes())?;
+    out.flush()
+}
+
+/// The sequence that asks a terminal to put `text` on its clipboard: ESC ] 52,
+/// `c` for the clipboard, the text in base64, and BEL to end it.
+fn osc52(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", STANDARD.encode(text))
+}
+
+/// Draw, wait for a key or the mouse, act on it — and again, until `q`.
 fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
     loop {
+        app.tick(Instant::now());
         terminal.draw(|frame| app.render(frame))?;
+
+        // While "copied to clipboard" shows, wait no longer than it has left:
+        // when the time runs out with nothing pressed, go round again so that
+        // `tick` takes it down.
+        if let Some(left) = app.copied_left(Instant::now()) {
+            if !event::poll(left)? {
+                continue;
+            }
+        }
 
         match event::read()? {
             // Windows reports a key going up as well as going down, so every
@@ -312,11 +515,19 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
                 }
                 app.handle(key.code);
             }
-            Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
-                app.click(mouse.column, mouse.row);
-            }
-            // The wheel is left alone on purpose. Moving the selection with it
-            // surprised; it will scroll the preview once the preview scrolls, in M8.
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => app.click(mouse.column, mouse.row),
+                MouseEventKind::Drag(MouseButton::Left) => app.drag(mouse.column, mouse.row),
+                MouseEventKind::Up(MouseButton::Left) => {
+                    if let Some(text) = app.release(Instant::now()) {
+                        copy(&text)?;
+                    }
+                }
+                // The wheel is left alone on purpose. Moving the selection with
+                // it surprised; it will scroll the preview once the preview
+                // scrolls, in M8.
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -329,7 +540,6 @@ mod tests {
     use crate::testutil::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::buffer::Buffer;
     use ratatui::style::Modifier;
 
     /// The cells a terminal of this size would be given.
@@ -571,6 +781,202 @@ mod tests {
         draw(&mut app, 100, 5);
         app.click(5, 1);
         assert_eq!(app.source, 0);
+    }
+
+    // ------------------------------------------------------------- dragging
+    //
+    // On a 100 x 8 screen the preview spans columns 60-99; inside its border,
+    // columns 61-98 and rows 1-5. `alpha` shows its one file there:
+    //
+    //   row 1  # Alpha rule    `A` on column 63, the `a` that ends Alpha on 67
+    //   row 2  body line
+    //   row 3  한글 줄          한 on 61-62, 글 on 63-64, 줄 on 66-67
+
+    fn alpha(name: &str) -> App {
+        let dir = scratch(name);
+        write(&dir.join("alpha.md"), "# Alpha rule\nbody line\n한글 줄\n");
+        app(vec![Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles)])
+    }
+
+    /// Press at `from`, drag to `to` and let go, drawing before each step as
+    /// the loop does. What would be copied.
+    fn drag_across(app: &mut App, from: (u16, u16), to: (u16, u16)) -> Option<String> {
+        draw(app, 100, 8);
+        app.click(from.0, from.1);
+        draw(app, 100, 8);
+        app.drag(to.0, to.1);
+        draw(app, 100, 8);
+        app.release(Instant::now())
+    }
+
+    #[test]
+    fn dragging_along_a_line_copies_the_cells_it_covered() {
+        let mut app = alpha("tui-drag-line");
+        assert_eq!(drag_across(&mut app, (63, 1), (67, 1)).as_deref(), Some("Alpha"));
+    }
+
+    #[test]
+    fn dragging_backwards_copies_the_same() {
+        let mut app = alpha("tui-drag-back");
+        assert_eq!(drag_across(&mut app, (67, 1), (63, 1)).as_deref(), Some("Alpha"));
+    }
+
+    #[test]
+    fn a_drag_over_rows_takes_the_first_from_its_start_and_the_middle_whole() {
+        let mut app = alpha("tui-drag-rows");
+        let copied = drag_across(&mut app, (69, 1), (64, 3));
+        assert_eq!(copied.as_deref(), Some("rule\nbody line\n한글"));
+    }
+
+    #[test]
+    fn a_wide_character_is_copied_once_and_only_from_its_first_cell() {
+        let mut app = alpha("tui-drag-wide");
+        // Cell by cell, row 3 holds 한, a blank, 글, a blank, a space, 줄, a blank.
+        assert_eq!(drag_across(&mut app, (61, 3), (67, 3)).as_deref(), Some("한글 줄"));
+        // Starting on the cell that 한 covers leaves 한 out.
+        assert_eq!(drag_across(&mut app, (62, 3), (64, 3)).as_deref(), Some("글"));
+    }
+
+    #[test]
+    fn a_drag_stays_inside_the_preview_however_far_it_goes() {
+        // Column 99 is the border and row 7 the keys: held to column 98, row 5.
+        let mut app = alpha("tui-drag-far");
+        let copied = drag_across(&mut app, (63, 1), (99, 7));
+        assert_eq!(copied.as_deref(), Some("Alpha rule\nbody line\n한글 줄\n\n"));
+    }
+
+    #[test]
+    fn a_plain_click_in_the_preview_copies_and_highlights_nothing() {
+        let mut app = alpha("tui-drag-click");
+        draw(&mut app, 100, 8);
+        app.click(63, 1);
+        let cells = draw(&mut app, 100, 8);
+        assert!(!cells[(63, 1)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(app.release(Instant::now()), None);
+    }
+
+    #[test]
+    fn a_drag_that_began_outside_the_preview_selects_nothing() {
+        // A real drag reports every cell it crosses; two moves into the
+        // preview, so that a selection begun by the first would show in the second.
+        let mut app = alpha("tui-drag-outside");
+        draw(&mut app, 100, 8);
+        app.click(35, 1);
+        app.drag(63, 1);
+        app.drag(67, 1);
+        let cells = draw(&mut app, 100, 8);
+        assert!(!cells[(65, 1)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(app.release(Instant::now()), None);
+    }
+
+    #[test]
+    fn nothing_is_copied_from_a_drag_over_blanks_alone() {
+        let mut app = alpha("tui-drag-blank");
+        assert_eq!(drag_across(&mut app, (70, 4), (80, 4)), None);
+        // Across two blank rows as well: found in the author's terminal, where
+        // the rows joined into a lone line break and "copied" showed.
+        assert_eq!(drag_across(&mut app, (70, 4), (80, 5)), None);
+    }
+
+    #[test]
+    fn the_dragged_cells_are_drawn_reversed_and_stay_so_after_letting_go() {
+        let mut app = alpha("tui-drag-drawn");
+        drag_across(&mut app, (63, 1), (67, 1));
+        let cells = draw(&mut app, 100, 8);
+        let reversed = |x: u16| cells[(x, 1)].modifier.contains(Modifier::REVERSED);
+        assert!(!reversed(62));
+        assert!((63..=67).all(reversed));
+        assert!(!reversed(68));
+    }
+
+    #[test]
+    fn a_key_or_another_click_lets_go_of_the_selection() {
+        let mut app = alpha("tui-drag-clear");
+        drag_across(&mut app, (63, 1), (67, 1));
+        press(&mut app, &[KeyCode::Tab]);
+        assert!(app.selection.is_none());
+
+        drag_across(&mut app, (63, 1), (67, 1));
+        click(&mut app, 35, 1);
+        assert!(app.selection.is_none());
+    }
+
+    #[test]
+    fn a_selection_is_cut_to_a_preview_that_shrank_under_it() {
+        // At 80 columns the preview's inside ends at column 78, short of 90.
+        let mut app = alpha("tui-drag-shrink");
+        draw(&mut app, 100, 8);
+        app.click(63, 1);
+        app.drag(90, 1);
+        draw(&mut app, 80, 8);
+        assert_eq!(app.release(Instant::now()).as_deref(), Some("Alpha rule"));
+    }
+
+    #[test]
+    fn a_selection_survives_the_preview_shrinking_to_nothing_under_it() {
+        // 60 columns leave the preview none: the two panes left of it take them all.
+        let mut app = alpha("tui-drag-vanish");
+        draw(&mut app, 100, 8);
+        app.click(63, 1);
+        app.drag(67, 1);
+        draw(&mut app, 60, 8);
+        app.drag(70, 1);
+        assert_eq!(app.release(Instant::now()), None);
+    }
+
+    #[test]
+    fn a_wrapped_line_is_copied_as_the_rows_it_shows_on() {
+        // 48 characters in a preview 38 wide: the screen, not the file, is read.
+        let dir = scratch("tui-drag-wrapped");
+        write(&dir.join("long.md"), "one two three four five six seven eight nine ten\n");
+        let mut app = app(vec![Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles)]);
+
+        let copied = drag_across(&mut app, (61, 1), (98, 2)).unwrap();
+        assert_eq!(copied, "one two three four five six seven\neight nine ten");
+    }
+
+    // The bottom row after a copy. `release` and `tick` are handed the time, so
+    // a test can move it on without waiting.
+
+    /// What the bottom row of a 100 x 8 screen shows.
+    fn bottom_row(app: &mut App) -> String {
+        screen(app, 100, 8)[7].clone()
+    }
+
+    #[test]
+    fn a_copy_says_so_at_the_right_end_of_the_bottom_row_for_two_seconds() {
+        let mut app = alpha("tui-copied");
+        let start = Instant::now();
+        draw(&mut app, 100, 8);
+        app.click(63, 1);
+        app.drag(67, 1);
+        app.release(start);
+
+        let row = bottom_row(&mut app);
+        assert!(row.starts_with(KEYS), "{row:?}");
+        assert!(row.ends_with(COPIED), "{row:?}");
+        assert_eq!(app.copied_left(start), Some(COPIED_FOR));
+
+        app.tick(start + COPIED_FOR - Duration::from_millis(1));
+        assert!(bottom_row(&mut app).ends_with(COPIED));
+        app.tick(start + COPIED_FOR);
+        assert!(!bottom_row(&mut app).contains(COPIED.trim_end()));
+        assert_eq!(app.copied_left(start + COPIED_FOR), None);
+    }
+
+    #[test]
+    fn nothing_copied_says_nothing() {
+        let mut app = alpha("tui-copied-not");
+        drag_across(&mut app, (70, 4), (80, 4));
+        drag_across(&mut app, (63, 1), (63, 1));
+        assert!(!bottom_row(&mut app).contains(COPIED.trim_end()));
+        assert_eq!(app.copied_left(Instant::now()), None);
+    }
+
+    #[test]
+    fn osc52_carries_the_text_in_base64() {
+        assert_eq!(osc52("hello"), "\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(osc52("한글"), "\x1b]52;c;7ZWc6riA\x07");
     }
 
     // -------------------------------------------------------------- drawing
