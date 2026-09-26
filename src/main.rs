@@ -7,7 +7,7 @@ mod tui;
 mod testutil;
 
 use std::env;
-use std::io::{self, IsTerminal};
+use std::io::{self, IsTerminal, Write};
 
 use crate::listing::{failed, listing};
 use crate::source::{Scope, Source, Walk, find_project_root};
@@ -63,9 +63,9 @@ fn main() -> io::Result<()> {
         (None, None) => String::from("PROJECT (current directory unknown)"),
     };
 
-    // Provisional until slice 4 settles it: only a bare `agentdocs` typed at a
-    // terminal opens the screen. With words, or with output going to a pipe or
-    // a file, the listing is printed exactly as before.
+    // Only a bare `agentdocs` typed at a terminal opens the screen. With words,
+    // or with output going to a pipe or a file, the listing is printed —
+    // ADR-0008.
     if terms.is_empty() && io::stdout().is_terminal() {
         // The pane has room for the project's directory name, not its path.
         let project_title = match &root {
@@ -76,37 +76,66 @@ fn main() -> io::Result<()> {
         return tui::open(app);
     }
 
-    println!("{global_header}");
+    print_listing(&mut io::stdout().lock(), &global_header, &project_header, &sources, &terms)
+}
+
+/// Print the listing to `out`. Whoever reads it may stop early — `| head`,
+/// `| Select-Object -First 5` — and has then seen all they asked for: the
+/// rest goes unwritten, and that is not a failure.
+fn print_listing(
+    out: &mut impl Write,
+    global: &str,
+    project: &str,
+    sources: &[Source],
+    terms: &[String],
+) -> io::Result<()> {
+    match write_listing(out, global, project, sources, terms) {
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
+
+/// The listing itself: the global heading, then every Source with its
+/// Entries, and the project heading just before the first project Source —
+/// or last, when there is none. The first write that fails ends it.
+fn write_listing(
+    out: &mut impl Write,
+    global: &str,
+    project: &str,
+    sources: &[Source],
+    terms: &[String],
+) -> io::Result<()> {
+    writeln!(out, "{global}")?;
 
     let mut project_shown = false;
-    for src in &sources {
+    for src in sources {
         if let Scope::Project = src.scope {
             if !project_shown {
-                println!("{project_header}");
+                writeln!(out, "{project}")?;
                 project_shown = true;
             }
         }
 
         match src.entries() {
             Ok(walked) => {
-                for line in listing(&src.name, &walked, &terms) {
-                    println!("{line}");
+                for line in listing(&src.name, &walked, terms) {
+                    writeln!(out, "{line}")?;
                 }
             }
-            Err(e) => println!("{}", failed(&src.name, &e)),
+            Err(e) => writeln!(out, "{}", failed(&src.name, &e))?,
         }
     }
 
     if !project_shown {
-        println!("{project_header}");
+        writeln!(out, "{project}")?;
     }
-
-    Ok(())
+    out.flush()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::*;
 
     // ------------------------------------------------------------ search_terms
 
@@ -144,5 +173,73 @@ mod tests {
         // inside every text.
         assert_eq!(search_terms(args(&["agentdocs", "", "adr", "   "])), vec!["adr"]);
         assert!(search_terms(args(&["agentdocs", ""])).is_empty());
+    }
+
+    // ----------------------------------------------------------------- listing
+
+    /// A global Source holding one rule, and a project Source that is not there.
+    fn two_sources(name: &str) -> Vec<Source> {
+        let dir = scratch(name);
+        write(&dir.join("rules").join("one.md"), "# one\n");
+        vec![
+            Source::new("rules", dir.join("rules"), Scope::Global, Walk::MarkdownFiles),
+            Source::new("docs", dir.join("docs"), Scope::Project, Walk::MarkdownTree),
+        ]
+    }
+
+    fn written(sources: &[Source]) -> Vec<String> {
+        let mut out = Vec::new();
+        write_listing(&mut out, "GLOBAL", "PROJECT here", sources, &[]).unwrap();
+        String::from_utf8(out).unwrap().lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn the_project_heading_comes_just_before_the_first_project_source() {
+        let lines = written(&two_sources("main-order"));
+        assert_eq!(lines[..2], ["GLOBAL", "  rules:1"]);
+        assert_eq!(lines[lines.len() - 2..], ["PROJECT here", "  docs:(missing)"]);
+    }
+
+    #[test]
+    fn with_no_project_source_the_project_heading_comes_last() {
+        let mut sources = two_sources("main-noproject");
+        sources.pop();
+        assert_eq!(written(&sources).last().map(String::as_str), Some("PROJECT here"));
+    }
+
+    /// Takes `room` bytes and then refuses with `kind` — the way a pipe does
+    /// once `| head` has read enough and gone.
+    struct StopsAfter {
+        room: usize,
+        kind: io::ErrorKind,
+    }
+
+    impl Write for StopsAfter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.room == 0 {
+                return Err(io::Error::from(self.kind));
+            }
+            let taken = buf.len().min(self.room);
+            self.room -= taken;
+            Ok(taken)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_reader_that_stops_early_is_not_an_error() {
+        let mut out = StopsAfter { room: 10, kind: io::ErrorKind::BrokenPipe };
+        let result = print_listing(&mut out, "GLOBAL", "PROJECT here", &two_sources("main-pipe"), &[]);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn any_other_failure_to_write_still_is() {
+        let mut out = StopsAfter { room: 10, kind: io::ErrorKind::PermissionDenied };
+        let result = print_listing(&mut out, "GLOBAL", "PROJECT here", &two_sources("main-denied"), &[]);
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
     }
 }

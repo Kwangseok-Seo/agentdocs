@@ -11,3 +11,4 @@ An index of the settled design decisions in this repository. Check the relevant 
 | [0005](0005-sources-report-their-own-directory.md) | A Source reports its own directory; Entries are never merged across Sources | accepted |
 | [0006](0006-unreadable-is-counted-not-dropped.md) | What a Walk could not read is counted, not dropped | accepted |
 | [0007](0007-links-are-listed-not-followed.md) | A link is listed but never walked into | accepted |
+| [0008](0008-screen-for-a-bare-command-at-a-terminal.md) | Only a bare `agentdocs` at a terminal opens the screen; words and pipes get the listing | accepted |

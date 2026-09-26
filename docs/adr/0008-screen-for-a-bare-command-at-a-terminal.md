@@ -1,0 +1,7 @@
+# Only a bare `agentdocs` at a terminal opens the screen; words and pipes get the listing
+
+A bare `agentdocs` typed at a terminal opens the screen, and any search word — or standard output going to a pipe or a file — prints the listing instead, so that a search keeps showing its Hits, and anything that reads the output as text (a pipe, a file, an agent's shell) gets text, accepting that one command behaves differently depending on where its output goes and that the listing without words is reached at a terminal only through a pipe (`agentdocs | more`).
+
+The terminal half is not a choice: a screen cannot be drawn into a pipe. The word half is. The alternative, tried as a throwaway build, opened the screen narrowed to the words — each Source counted as kept of total, exactly as the listing counts it through `listing::heading`, and only the matching Entries shown — but the preview shows a file from its top, so the Hit that the listing prints under an Entry is out of sight whenever it lies further down than the preview is tall. That trade may turn once the preview can scroll to a Hit (M8) and the screen has a search of its own; changing it then is a superseding record, not an edit to this one. No flag forces the listing at a terminal: whatever needs text is reading through a pipe already.
+
+Because the listing is what a pipe gets, a reader that stops early — `| head`, `| Select-Object -First 5` — is not a failure: `print_listing` stops writing and the process exits 0, where `println!` used to panic.
