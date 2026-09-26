@@ -79,6 +79,28 @@ pub fn reason(kind: io::ErrorKind) -> &'static str {
     }
 }
 
+/// A walked Source's line: its name and how many Entries it holds — how many
+/// were kept out of the whole, when searching — and how many things could not
+/// be read. The listing and the screen both print it, so there is one wording.
+pub fn heading(name: &str, walked: &Walked, terms: &[String]) -> String {
+    let total = walked.entries.len();
+    let mut heading = if terms.is_empty() {
+        format!("  {name}:{total}")
+    } else {
+        let kept = walked.entries.iter().filter(|e| e.matches(terms)).count();
+        format!("  {name}:{kept}/{total}")
+    };
+    if walked.unreadable > 0 {
+        heading.push_str(&format!(" ({} unreadable)", walked.unreadable));
+    }
+    heading
+}
+
+/// A Source that could not be walked at all: its name and why.
+pub fn failed(name: &str, err: &io::Error) -> String {
+    format!("  {}:({})", name, reason(err.kind()))
+}
+
 /// One Entry's line on screen: the name it is known by, and as much of its
 /// description as fits. Both halves come out of somebody else's file, so both
 /// pass through `printable` — a function rather than two `println!` arms so that
@@ -96,22 +118,8 @@ fn row(entry: &Entry) -> String {
 /// every Entry, the plain count, no matched lines. A function for the same
 /// reason as `row`: a test can read what the terminal would have been given.
 pub fn listing(name: &str, walked: &Walked, terms: &[String]) -> Vec<String> {
-    let hits: Vec<&Entry> = walked.entries.iter()
-        .filter(|e| e.matches(terms))
-        .collect();
-
-    // Searching shows how many of the whole were kept.
-    let mut heading = if terms.is_empty() {
-        format!("  {}:{}", name, walked.entries.len())
-    } else {
-        format!("  {}:{}/{}", name, hits.len(), walked.entries.len())
-    };
-    if walked.unreadable > 0 {
-        heading.push_str(&format!(" ({} unreadable)", walked.unreadable));
-    }
-
-    let mut lines = vec![heading];
-    for entry in hits {
+    let mut lines = vec![heading(name, walked, terms)];
+    for entry in walked.entries.iter().filter(|e| e.matches(terms)) {
         lines.push(row(entry));
         // Out of somebody else's file, so through `around` and with it
         // `printable`, like every other field on screen.

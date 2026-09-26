@@ -9,7 +9,7 @@ mod testutil;
 use std::env;
 use std::io::{self, IsTerminal};
 
-use crate::listing::{listing, reason};
+use crate::listing::{failed, listing};
 use crate::source::{Scope, Source, Walk, find_project_root};
 
 /// The words to search for: every argument after the program's own path,
@@ -33,13 +33,6 @@ fn main() -> io::Result<()> {
 
     let terms = search_terms(env::args());
 
-    // Provisional until slice 4 settles it: only a bare `agentdocs` typed at a
-    // terminal opens the screen. With words, or with output going to a pipe or
-    // a file, the listing is printed exactly as before.
-    if terms.is_empty() && io::stdout().is_terminal() {
-        return ratatui::run(|terminal| tui::run(terminal));
-    }
-
     let mut sources = Vec::new();
     if let Some(home) = &home {
         sources.push(Source::new("skills", home.join(".claude").join("skills"), Scope::Global, Walk::BundleDirs));
@@ -59,17 +52,32 @@ fn main() -> io::Result<()> {
         sources.push(Source::new("docs", r.join("docs"), Scope::Project, Walk::MarkdownTree));
     }
 
-    match &home {
-        Some(_) => println!("GLOBAL"),
-        None => println!("GLOBAL (home directory unknown)"),
-    }
+    let global_header = match &home {
+        Some(_) => String::from("GLOBAL"),
+        None => String::from("GLOBAL (home directory unknown)"),
+    };
 
     let project_header = match (&root, &cwd) {
         (Some(r), _) => format!("PROJECT {}", r.display()),
         (None, Some(_)) => String::from("PROJECT (outside any project)"),
         (None, None) => String::from("PROJECT (current directory unknown)"),
     };
-    
+
+    // Provisional until slice 4 settles it: only a bare `agentdocs` typed at a
+    // terminal opens the screen. With words, or with output going to a pipe or
+    // a file, the listing is printed exactly as before.
+    if terms.is_empty() && io::stdout().is_terminal() {
+        // The pane has room for the project's directory name, not its path.
+        let project_title = match &root {
+            Some(r) => format!("PROJECT {}", r.file_name().unwrap_or(r.as_os_str()).to_string_lossy()),
+            None => project_header,
+        };
+        let app = tui::App::new(sources, global_header, project_title);
+        return tui::open(app);
+    }
+
+    println!("{global_header}");
+
     let mut project_shown = false;
     for src in &sources {
         if let Scope::Project = src.scope {
@@ -85,7 +93,7 @@ fn main() -> io::Result<()> {
                     println!("{line}");
                 }
             }
-            Err(e) => println!("  {}:({})", src.name, reason(e.kind())),
+            Err(e) => println!("{}", failed(&src.name, &e)),
         }
     }
 

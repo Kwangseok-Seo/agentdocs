@@ -21,7 +21,7 @@ pub enum EntryKind {
 impl Entry {
     /// The file whose frontmatter describes this Entry: the file itself, or the
     /// Bundle's Lead. A Bundle without a Lead has nothing to read.
-    fn doc(&self) -> Option<&Path> {
+    pub fn doc(&self) -> Option<&Path> {
         match &self.kind {
             EntryKind::File => Some(&self.path),
             EntryKind::Bundle { lead: Some(lead) } => Some(lead),
