@@ -9,6 +9,7 @@ dependencies = [
  "base64",
  "pulldown-cmark",
  "ratatui",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

@@ -18,7 +18,7 @@ use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
 use crate::entry::Entry;
-use crate::listing::{failed, heading};
+use crate::listing::{failed, heading, printable};
 use crate::markdown;
 use crate::source::{Scope, Source, Walked};
 
@@ -395,11 +395,12 @@ impl App {
     }
 
     /// The selected Source's Entries by name. Names come out of somebody else's
-    /// file, and ratatui drops control characters as it writes a cell — a test
-    /// below holds it to that.
+    /// file, so they pass through `printable` as the listing's do: a `List`
+    /// hands a character that takes no room to the cell before it, where a
+    /// `Paragraph` would have dropped it.
     fn render_entries(&mut self, frame: &mut Frame, area: Rect) {
         let names: Vec<String> = match self.walked() {
-            Some(walked) => walked.entries.iter().map(|e| e.name.clone()).collect(),
+            Some(walked) => walked.entries.iter().map(|e| printable(&e.name)).collect(),
             None => Vec::new(),
         };
 
@@ -1069,7 +1070,6 @@ mod tests {
     const FORMAT: [char; 2] = ['\u{202e}', '\u{200b}'];
 
     #[test]
-    #[ignore = "known gap: the Entries list keeps zero-width characters; see M5, Left for later"]
     fn a_format_character_in_a_name_never_reaches_the_screen() {
         let dir = scratch("tui-format-name");
         write(&dir.join("x.md"), "---\nname: left\u{202e}right\u{200b}gap\n---\n");
@@ -1078,6 +1078,16 @@ mod tests {
         let rows = screen(&mut app, 100, 8).join("\n");
         assert!(rows.contains("leftrightgap"), "{rows}");
         assert!(!rows.contains(FORMAT), "{rows:?}");
+    }
+
+    #[test]
+    fn an_accent_in_a_name_stays_with_its_letter() {
+        let dir = scratch("tui-accent-name");
+        write(&dir.join("x.md"), "---\nname: cafe\u{301}\n---\n");
+
+        let mut app = app(vec![Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles)]);
+        let rows = screen(&mut app, 100, 8).join("\n");
+        assert!(rows.contains("cafe\u{301}"), "{rows:?}");
     }
 
     #[test]

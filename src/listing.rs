@@ -1,26 +1,53 @@
 use std::io;
 
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
 use crate::entry::Entry;
 use crate::source::Walked;
 
-/// Drop the control characters from text that came out of somebody else's file.
-/// An escape sequence would otherwise move the cursor or recolour the terminal,
-/// and a carriage return would overwrite the row that had just been written.
+/// The pieces of `text` a terminal would show, each with the columns it takes.
 ///
-/// Every field printed from a file goes through here, name as well as
-/// description — the filter belongs to the source of the text, not to the
-/// column it lands in.
-fn printable(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+/// A piece is a grapheme: a character together with whatever joins it, like an
+/// accent or the mark that makes `⚠` an emoji. Two kinds are left out. One
+/// holding a control character: an escape sequence would move the cursor or
+/// recolour the terminal, and a carriage return would overwrite the row just
+/// written. And one taking no room of its own, like a right-to-left override
+/// or a zero-width space, which change how the rest is laid out while showing
+/// nothing. That is the rule ratatui follows as it writes the preview.
+fn shown(text: &str) -> impl Iterator<Item = (&str, usize)> {
+    text.graphemes(true)
+        .map(|g| (g, g.width()))
+        .filter(|&(g, width)| width > 0 && !g.contains(char::is_control))
 }
 
-/// Fit a description onto one line. The cut counts characters, not bytes, so a
-/// Korean description is never sliced through the middle of a character.
+/// Text that came out of somebody else's file, as a terminal may be given it.
+///
+/// Every field printed from a file goes through here, name as well as
+/// description, on the screen as well as in the listing — the filter belongs
+/// to the source of the text, not to the place it lands.
+pub fn printable(s: &str) -> String {
+    shown(s).map(|(g, _)| g).collect()
+}
+
+/// How many columns of a terminal `s` takes once it is printable.
+fn columns(s: &str) -> usize {
+    shown(s).map(|(_, w)| w).sum()
+}
+
+/// Fit a description onto `width` columns of one line. A Korean character
+/// takes two columns, so the room is added up piece by piece rather than
+/// counted — and the cut never falls inside a character.
 fn short(s: &str, width: usize) -> String {
-    let text = printable(s);
-    let mut out: String = text.chars().take(width).collect();
-    if text.chars().count() > width {
-        out.push('…');
+    let mut out = String::new();
+    let mut used = 0;
+    for (g, w) in shown(s) {
+        used += w;
+        if used > width {
+            out.push('…');
+            break;
+        }
+        out.push_str(g);
     }
     out
 }
@@ -40,8 +67,9 @@ fn around(line: &str, terms: &[String], width: usize) -> String {
         return short(line, width);
     };
 
-    // `at` and `len` are bytes of `lower`; the screen shows characters of `line`.
-    if chars_before(line, at + len) <= width {
+    // `at` and `len` are bytes of `lower`; the terminal shows columns of `line`.
+    let through_term: String = line.chars().take(chars_before(line, at + len)).collect();
+    if columns(&through_term) <= width {
         return short(line, width);
     }
     let skip = chars_before(line, at).saturating_sub(10);
@@ -106,9 +134,12 @@ pub fn failed(name: &str, err: &io::Error) -> String {
 /// pass through `printable` — a function rather than two `println!` arms so that
 /// a test can read the row the terminal would have been given.
 fn row(entry: &Entry) -> String {
+    let name = printable(&entry.name);
+    // `{:<32}` would pad to 32 characters, and a Korean name is twice as wide.
+    let pad = " ".repeat(32usize.saturating_sub(columns(&name)));
     match &entry.description {
-        Some(text) => format!("    {:<32} {}", printable(&entry.name), short(text, 44)),
-        None => format!("    {:<32} -", printable(&entry.name)),
+        Some(text) => format!("    {name}{pad} {}", short(text, 44)),
+        None => format!("    {name}{pad} -"),
     }
 }
 
@@ -177,10 +208,16 @@ mod tests {
     }
 
     #[test]
-    fn cutting_counts_characters_rather_than_bytes() {
-        // Every one of these is three bytes in UTF-8. Cutting by bytes would
-        // slice through the middle of a character and panic.
-        assert_eq!(short("한국어입니다", 3), "한국어\u{2026}");
+    fn cutting_counts_columns_rather_than_bytes_or_characters() {
+        // Every one of these is three bytes in UTF-8 and two columns on
+        // screen. Cutting by bytes would slice through the middle of a
+        // character and panic; counting characters would print twice the room.
+        assert_eq!(short("한국어입니다", 6), "한국어\u{2026}");
+    }
+
+    #[test]
+    fn a_wide_character_that_would_cross_the_width_is_left_out_whole() {
+        assert_eq!(short("한국어", 5), "한국\u{2026}");
     }
 
     #[test]
@@ -221,6 +258,37 @@ mod tests {
         assert_eq!(printable("한국어"), "한국어");
     }
 
+    #[test]
+    fn a_character_that_takes_no_room_of_its_own_never_reaches_the_terminal() {
+        // A right-to-left override and a zero-width space.
+        assert_eq!(printable("left\u{202e}right\u{200b}gap"), "leftrightgap");
+    }
+
+    #[test]
+    fn a_character_that_joins_the_one_before_it_is_kept() {
+        // An accent written as its own character, the mark that makes a
+        // warning sign an emoji, and the joiner inside a two-person emoji.
+        for text in ["cafe\u{301}", "\u{26a0}\u{fe0f} note", "\u{1f469}\u{200d}\u{1f4bb}"] {
+            assert_eq!(printable(text), text);
+        }
+    }
+
+    #[test]
+    fn a_korean_name_is_padded_to_the_same_column_as_any_other() {
+        let mut entry = md_entry(PathBuf::from("notes.md")).unwrap();
+        entry.name = "세션회고".to_string();
+        entry.description = Some("x".to_string());
+        // Four characters, eight columns: 24 spaces to reach column 32.
+        assert_eq!(row(&entry), format!("    세션회고{} x", " ".repeat(24)));
+    }
+
+    #[test]
+    fn a_korean_description_is_cut_at_44_columns() {
+        let mut entry = md_entry(PathBuf::from("notes.md")).unwrap();
+        entry.description = Some("가".repeat(30));
+        assert_eq!(row(&entry), format!("    {:<32} {}\u{2026}", "notes", "가".repeat(22)));
+    }
+
     // ------------------------------------------------------------------ around
 
     #[test]
@@ -236,10 +304,18 @@ mod tests {
     }
 
     #[test]
-    fn whether_a_term_fits_is_counted_in_characters_not_bytes() {
-        // 33 characters but 93 bytes: a byte count would move a line that fits.
-        let line = format!("{}adr", "가".repeat(30));
+    fn whether_a_term_fits_is_counted_in_columns_not_bytes() {
+        // 59 columns but 87 bytes: a byte count would move a line that fits.
+        let line = format!("{}adr", "가".repeat(28));
         assert_eq!(around(&line, &words(&["adr"]), 60), line);
+    }
+
+    #[test]
+    fn a_term_past_the_width_in_columns_is_brought_into_view() {
+        // 33 characters but 63 columns: a character count would call it a fit
+        // and cut the term off the end.
+        let line = format!("{}adr", "가".repeat(30));
+        assert_eq!(around(&line, &words(&["adr"]), 60), format!("…{}adr", "가".repeat(10)));
     }
 
     #[test]
