@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -9,11 +9,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// The bullets of a list, then of a list inside it, then of any deeper one.
 const BULLETS: [&str; 3] = ["•", "◦", "▪"];
 
-/// `text` drawn as Markdown, in rows no wider than `width`. Headings,
-/// paragraphs, lists, quotes, code blocks and rules are drawn; every other
-/// block is shown as it is on disk, so nothing in the file goes missing while
-/// the rest waits for a later slice. A blank line is kept where the file has
-/// one above a block.
+/// What stands between two cells of a table drawn as a grid.
+const BETWEEN: &str = " │ ";
+
+/// `text` drawn as Markdown, in rows no wider than `width`. HTML is shown as
+/// it is on disk; everything else is drawn. A blank line is kept where the
+/// file has one above a block.
 ///
 /// Every `Line` borrows from `text` — the parser hands back slices of it,
 /// not copies — so none of them can outlive it.
@@ -23,8 +24,6 @@ pub fn render(text: &str, width: u16) -> Vec<Line<'_>> {
     if width == 0 {
         return Vec::new();
     }
-    // Tables have to be recognised even while they are shown as on disk:
-    // unrecognised, one is a paragraph, and its rows run together into one.
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_STRIKETHROUGH
@@ -42,6 +41,7 @@ pub fn render(text: &str, width: u16) -> Vec<Line<'_>> {
         containers: Vec::new(),
         code: false,
         gapped: false,
+        table: None,
     };
     for (event, range) in Parser::new_ext(text, options).into_offset_iter() {
         renderer.event(event, range);
@@ -75,6 +75,8 @@ struct Renderer<'a> {
     code: bool,
     /// Whether the last row is a blank line kept from the file.
     gapped: bool,
+    /// The table being read, drawn once all of it is known.
+    table: Option<Table<'a>>,
 }
 
 enum Container {
@@ -82,6 +84,16 @@ enum Container {
     /// A list item: its marker — `• `, `2. ` — in front of its first row,
     /// and as many spaces in front of every row after it.
     Item { marker: String, shown: bool },
+    /// Nothing in front of the first row, two spaces in front of the rest:
+    /// a line of a table's block or of the frontmatter, wrapped.
+    Hang,
+}
+
+/// A table as it is read: how each column is aligned, and its rows — the
+/// head first — each a list of cells, each cell the pieces of its text.
+struct Table<'a> {
+    alignments: Vec<Alignment>,
+    rows: Vec<Vec<Vec<Span<'a>>>>,
 }
 
 impl<'a> Renderer<'a> {
@@ -158,6 +170,38 @@ impl<'a> Renderer<'a> {
                 self.code = false;
             }
             Event::Text(text) if self.code => self.code_text(text),
+
+            Event::Start(Tag::Table(alignments)) => {
+                self.begin(range.start);
+                self.table = Some(Table { alignments, rows: Vec::new() });
+            }
+            Event::Start(Tag::TableHead | Tag::TableRow) => {
+                if let Some(table) = &mut self.table {
+                    table.rows.push(Vec::new());
+                }
+            }
+            // A cell's text is gathered as a paragraph's is, then moved in.
+            Event::End(TagEnd::TableCell) => {
+                let cell = std::mem::take(&mut self.current);
+                if let Some(row) = self.table.as_mut().and_then(|table| table.rows.last_mut()) {
+                    row.push(cell);
+                }
+            }
+            Event::Start(Tag::TableCell) | Event::End(TagEnd::TableHead | TagEnd::TableRow) => {}
+            Event::End(TagEnd::Table) => {
+                if let Some(table) = self.table.take() {
+                    if cut_short(&self.text[range.clone()]) {
+                        self.as_on_disk(range);
+                    } else {
+                        self.draw_table(table);
+                    }
+                }
+            }
+
+            Event::Start(Tag::MetadataBlock(_)) => {
+                self.frontmatter(range);
+                self.skip = 1;
+            }
 
             Event::Rule => {
                 self.begin(range.start);
@@ -277,6 +321,7 @@ impl<'a> Renderer<'a> {
                     first.push(Span::raw(if *shown { pad.clone() } else { marker.clone() }));
                     rest.push(Span::raw(pad));
                 }
+                Container::Hang => rest.push(Span::raw("  ")),
             }
         }
         (first, rest)
@@ -303,10 +348,22 @@ impl<'a> Renderer<'a> {
     /// blank line that follows it.
     fn gap(&mut self, start: usize) {
         if !self.lines.is_empty() && !self.gapped && blank_above(self.text, start) {
-            let (_, rest) = self.prefix();
-            self.lines.push(Line::from(rest));
-            self.gapped = true;
+            self.blank_row();
         }
+    }
+
+    /// A blank row, still behind the bars of the quotes it is in.
+    fn blank_row(&mut self) {
+        let (_, rest) = self.prefix();
+        self.lines.push(Line::from(rest));
+        self.gapped = true;
+    }
+
+    /// `spans` cut into rows, the rows after the first stepped in by two.
+    fn hanging(&mut self, spans: Vec<Span<'a>>) {
+        self.containers.push(Container::Hang);
+        self.emit(spans);
+        self.containers.pop();
     }
 
     /// The block at `range`, line for line as the file has it.
@@ -316,6 +373,144 @@ impl<'a> Renderer<'a> {
             self.emit(vec![Span::raw(line)]);
         }
     }
+
+    /// A table as a grid when all of it fits in a row, or else one block per
+    /// row, each cell behind its column's heading. A table with nothing
+    /// below its head is a grid whatever its width: as blocks, it would show
+    /// nothing at all.
+    fn draw_table(&mut self, table: Table<'a>) {
+        let Table { alignments, rows } = table;
+        let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let widths: Vec<usize> = (0..columns)
+            .map(|c| rows.iter().map(|row| row.get(c).map_or(0, |cell| cell_width(cell))).max().unwrap_or(0))
+            .collect();
+        let whole = widths.iter().sum::<usize>() + BETWEEN.width() * columns.saturating_sub(1);
+
+        if whole <= self.width.saturating_sub(self.indent()) || rows.len() < 2 {
+            self.grid(rows, &widths, &alignments);
+        } else {
+            self.blocks(rows);
+        }
+    }
+
+    /// Every cell padded to its column's width, as its column is aligned,
+    /// the head in bold and a line under it.
+    fn grid(&mut self, rows: Vec<Vec<Vec<Span<'a>>>>, widths: &[usize], alignments: &[Alignment]) {
+        let lines = Style::new().fg(Color::DarkGray);
+        for (r, row) in rows.into_iter().enumerate() {
+            let last = row.len().saturating_sub(1);
+            let mut spans = Vec::new();
+            for (c, cell) in row.into_iter().enumerate() {
+                if c > 0 {
+                    spans.push(Span::styled(BETWEEN, lines));
+                }
+                let room = widths[c] - cell_width(&cell);
+                let (before, after) = match alignments.get(c) {
+                    Some(Alignment::Right) => (room, 0),
+                    Some(Alignment::Center) => (room / 2, room - room / 2),
+                    _ => (0, room),
+                };
+                spans.push(Span::raw(" ".repeat(before)));
+                let head = if r == 0 { Style::new().bold() } else { Style::new() };
+                spans.extend(cell.into_iter().map(|span| span.patch_style(head)));
+                // Nothing pads the last cell out: it would only be trailing blanks.
+                if c < last {
+                    spans.push(Span::raw(" ".repeat(after)));
+                }
+            }
+            self.emit(spans);
+            if r == 0 {
+                let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
+                self.emit(vec![Span::styled(rule.join("─┼─"), lines)]);
+            }
+        }
+    }
+
+    /// Each row below the head as a block of its own, one line per cell:
+    /// the column's heading, then the cell.
+    fn blocks(&mut self, mut rows: Vec<Vec<Vec<Span<'a>>>>) {
+        let head = rows.remove(0);
+        let label = Style::new().fg(Color::Cyan);
+        for (r, row) in rows.into_iter().enumerate() {
+            if r > 0 {
+                self.blank_row();
+            }
+            for (c, cell) in row.into_iter().enumerate() {
+                // A heading is repeated in every block. Cloning a piece still
+                // borrowed from the file copies where it points, not its text.
+                let mut spans: Vec<Span<'a>> = match head.get(c) {
+                    Some(heading) => heading.iter().map(|span| Span::styled(span.content.clone(), span.style.patch(label))).collect(),
+                    None => Vec::new(),
+                };
+                spans.push(Span::styled(": ", label));
+                spans.extend(cell);
+                self.hanging(spans);
+            }
+        }
+    }
+
+    /// The frontmatter at `range`, without the lines that fence it, each key
+    /// in the colour of a table's headings. Read from the file rather than
+    /// from the parser's pieces, which it cuts differently for `\r\n`.
+    fn frontmatter(&mut self, range: Range<usize>) {
+        self.begin(range.start);
+        let text = self.text;
+        let mut lines: Vec<&'a str> = text[range].lines().skip(1).collect();
+        if lines.last().is_some_and(|line| matches!(line.trim(), "---" | "...")) {
+            lines.pop();
+        }
+        let label = Style::new().fg(Color::Cyan);
+        for line in lines {
+            let spans = match line.find(':') {
+                // A key starts its line; an indented line continues a value.
+                Some(colon) if !line.starts_with(char::is_whitespace) => {
+                    vec![Span::styled(&line[..=colon], label), Span::raw(&line[colon + 1..])]
+                }
+                _ => vec![Span::raw(line)],
+            };
+            self.hanging(spans);
+        }
+    }
+}
+
+/// How many cells a table cell's text takes up.
+fn cell_width(cell: &[Span<'_>]) -> usize {
+    cell.iter().map(Span::width).sum()
+}
+
+/// Whether a row of the table written as `text` holds more cells than its
+/// head. The parser drops the extra cells, and what they say with them —
+/// most often after a `|` inside backticks, which still divides a row.
+fn cut_short(text: &str) -> bool {
+    // The line of dashes is counted too, harmlessly: unless it holds as many
+    // cells as the head, the parser does not see a table at all.
+    let mut rows = text.lines().map(cells);
+    let Some(head) = rows.next() else { return false };
+    rows.any(|count| count > head)
+}
+
+/// How many cells a line of a table holds, counted as the parser counts
+/// them: divided at every `|` that no backslash escapes, a `|` at either
+/// end dividing nothing.
+fn cells(line: &str) -> usize {
+    // A table in a quote has `>` in front of every line.
+    let line = line.trim_start_matches(|c: char| c == '>' || c.is_whitespace()).trim_end();
+    // A `|` at the end divides nothing whether escaped or not: escaped, it
+    // is not counted anyway.
+    let line = line.strip_prefix('|').unwrap_or(line);
+    let line = line.strip_suffix('|').unwrap_or(line);
+    let mut count = 1;
+    let mut escaped = false;
+    for c in line.chars() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '|' {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Whether the line above the one that `start` is on is blank. Not on the
@@ -486,17 +681,128 @@ mod tests {
     }
 
     #[test]
-    fn blocks_not_drawn_yet_are_shown_as_on_disk() {
-        let text = "| a | b |\n|---|---|\n| 1 | 2 |\n\n<details>\n<summary>more</summary>\n</details>\n";
-        assert_eq!(
-            plain(text),
-            ["| a | b |", "|---|---|", "| 1 | 2 |", "", "<details>", "<summary>more</summary>", "</details>"]
-        );
+    fn html_is_shown_as_on_disk() {
+        let text = "<details>\n<summary>more</summary>\n</details>\n\nafter";
+        assert_eq!(plain(text), ["<details>", "<summary>more</summary>", "</details>", "", "after"]);
+    }
+
+    // --------------------------------------------------------------- tables
+
+    #[test]
+    fn a_table_that_fits_is_a_grid() {
+        let text = "| a | b |\n|---|---|\n| 1 | 22 |";
+        assert_eq!(plain(text), ["a │ b", "──┼───", "1 │ 22"]);
+        assert!(style_of(text, "a").add_modifier.contains(Modifier::BOLD));
+        assert!(!style_of(text, "1").add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
-    fn frontmatter_is_shown_as_on_disk() {
-        assert_eq!(plain("---\nname: a\n---\n\n# T\n"), ["---", "name: a", "---", "", "# T"]);
+    fn a_table_exactly_as_wide_as_the_row_is_still_a_grid() {
+        let text = "| a | b |\n|---|---|\n| 1 | 22 |";
+        assert_eq!(narrow(text, 6), ["a │ b", "──┼───", "1 │ 22"]);
+        assert_eq!(narrow(text, 5), ["a: 1", "b: 22"]);
+    }
+
+    #[test]
+    fn a_table_in_a_list_item_has_the_indent_less_room() {
+        let text = "- x\n\n  | a | b |\n  |---|---|\n  | 1 | 22 |";
+        assert_eq!(narrow(text, 8), ["• x", "", "  a │ b", "  ──┼───", "  1 │ 22"]);
+        assert_eq!(narrow(text, 7), ["• x", "", "  a: 1", "  b: 22"]);
+    }
+
+    #[test]
+    fn a_column_is_aligned_as_the_file_says() {
+        assert_eq!(plain("| n |\n|--:|\n| 1 |\n| 22 |"), [" n", "──", " 1", "22"]);
+        // Centred, an odd space left over goes after.
+        assert_eq!(plain("| n |\n|:-:|\n| 1 |\n| 2222 |"), [" n", "────", " 1", "2222"]);
+    }
+
+    #[test]
+    fn a_heading_repeated_in_every_block_is_not_copied() {
+        let text = String::from("| key | value |\n|---|---|\n| a | long long long text here |\n| b | x |");
+        for row in render(&text, 20) {
+            for span in &row.spans {
+                assert!(matches!(span.content, Cow::Borrowed(_)), "{span:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_table_too_wide_is_one_block_per_row() {
+        let text = "| key | value |\n|---|---|\n| a | long long long text here |\n| b | x |";
+        assert_eq!(
+            narrow(text, 20),
+            ["key: a", "value: long long", "  long text here", "", "key: b", "value: x"]
+        );
+        let rows = render(text, 20);
+        let heading = rows.iter().flat_map(|row| &row.spans).find(|span| span.content == "key").unwrap();
+        assert_eq!(heading.style.fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn a_cell_keeps_its_inline_styles() {
+        assert_eq!(style_of("| a |\n|---|\n| `x` |", "x").fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn a_table_with_only_a_head_is_still_shown() {
+        let text = "| alpha | beta |\n|---|---|";
+        assert_eq!(plain(text), ["alpha │ beta", "──────┼─────"]);
+        // Too wide for its row, it stays a grid: as blocks it would show nothing.
+        let rows = narrow(text, 5);
+        assert!(["alpha", "beta"].iter().all(|word| rows.iter().any(|row| row == word)), "{rows:?}");
+    }
+
+    #[test]
+    fn a_table_whose_row_the_parser_would_cut_short_is_shown_as_written() {
+        // From docs/learn/milestones/M2.md: the `|` inside backticks divides
+        // the row, and the parser would drop "joined into one line".
+        let text = "| Form | Result |\n|---|---|\n| `description: |` blocks | joined into one line |";
+        assert_eq!(plain(text), text.lines().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn cells_are_counted_as_the_parser_counts_them() {
+        assert_eq!(cells("| a | b |"), 2);
+        assert_eq!(cells("a | b"), 2);
+        assert_eq!(cells("| `x|y` | b |"), 3);
+        assert_eq!(cells("| a \\| b | c |"), 2);
+        assert_eq!(cells("| a | b \\|"), 2);
+        assert_eq!(cells("> | a | b |"), 2);
+    }
+
+    #[test]
+    fn a_table_in_a_list_item_stays_in_the_item() {
+        assert_eq!(plain("- item\n\n  | a |\n  |---|\n  | 1 |"), ["• item", "", "  a", "  ─", "  1"]);
+    }
+
+    // ---------------------------------------------------------- frontmatter
+
+    #[test]
+    fn frontmatter_loses_its_fences_and_colours_its_keys() {
+        let text = "---\nname: a\ndescription: b c\n---\n\n# T\n";
+        assert_eq!(plain(text), ["name: a", "description: b c", "", "# T"]);
+        assert_eq!(style_of(text, "name:").fg, Some(Color::Cyan));
+        assert_eq!(style_of(text, "a").fg, None);
+    }
+
+    #[test]
+    fn a_long_frontmatter_value_wraps_in_by_two() {
+        assert_eq!(narrow("---\ndescription: one two three\n---", 12), ["description:", "  one two", "  three"]);
+    }
+
+    #[test]
+    fn an_indented_frontmatter_line_is_kept_as_written() {
+        let text = "---\ntags:\n  - a\n  inner: b\n---";
+        assert_eq!(plain(text), ["tags:", "  - a", "  inner: b"]);
+        // Only a key that starts its line is one.
+        assert_eq!(style_of(text, "inner:").fg, None);
+    }
+
+    #[test]
+    fn frontmatter_from_a_crlf_file_reads_the_same() {
+        let text = "---\r\nname: a\r\ndescription: >\r\n  one\r\n---\r\n";
+        assert_eq!(plain(text), ["name: a", "description: >", "  one"]);
     }
 
     // ---------------------------------------------------------------- lists
