@@ -12,5 +12,6 @@ categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
 base64 = "0.22"
+pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.0"
 unicode-width = "0.2"

@@ -19,6 +19,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::entry::Entry;
 use crate::listing::{failed, heading};
+use crate::markdown;
 use crate::source::{Scope, Source, Walked};
 
 /// The keys the screen answers to, shown along its bottom row.
@@ -408,19 +409,19 @@ impl App {
         frame.render_stateful_widget(list, area, &mut self.entries);
     }
 
-    /// The selected Entry's file as it is on disk, with any dragged-over text
-    /// shown reversed. Rendering the Markdown is M6.
+    /// The selected Entry's file drawn as Markdown, with any dragged-over text
+    /// shown reversed.
     fn render_preview(&self, frame: &mut Frame, area: Rect) {
-        let text = match self.entry() {
-            None => "",
+        let lines = match self.entry() {
+            None => Vec::new(),
             Some(entry) => match (&entry.text, entry.doc()) {
-                (Some(text), _) => text.as_str(),
-                (None, None) => "(this Bundle has no SKILL.md)",
-                (None, Some(_)) => "(the file could not be read)",
+                (Some(text), _) => markdown::render(text),
+                (None, None) => vec![Line::raw("(this Bundle has no SKILL.md)")],
+                (None, Some(_)) => vec![Line::raw("(the file could not be read)")],
             },
         };
 
-        let preview = Paragraph::new(text)
+        let preview = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .block(Block::bordered().title("Preview"));
         frame.render_widget(preview, area);
@@ -791,10 +792,13 @@ mod tests {
     //   row 1  # Alpha rule    `A` on column 63, the `a` that ends Alpha on 67
     //   row 2  body line
     //   row 3  한글 줄          한 on 61-62, 글 on 63-64, 줄 on 66-67
+    //
+    // The backslash ends the line where it stands; without it the two lines
+    // are one paragraph, and the preview joins them.
 
     fn alpha(name: &str) -> App {
         let dir = scratch(name);
-        write(&dir.join("alpha.md"), "# Alpha rule\nbody line\n한글 줄\n");
+        write(&dir.join("alpha.md"), "# Alpha rule\nbody line\\\n한글 줄\n");
         app(vec![Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles)])
     }
 

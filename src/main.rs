@@ -1,6 +1,7 @@
 mod entry;
 mod frontmatter;
 mod listing;
+mod markdown;
 mod source;
 mod tui;
 #[cfg(test)]
