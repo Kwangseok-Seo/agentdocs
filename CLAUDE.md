@@ -18,7 +18,7 @@ Goal 2 is the constraint that does not show up in the code. The workflow below e
 ## Learning-first workflow (mandatory)
 
 - **Theory before implementation.** Before building a feature, explain the relevant Rust concepts in conversation — why it works this way, why the idiom is what it is.
-- **No dumps; co-write.** Never pour out finished code. Where possible, guide the author to understand and write it — Socratically.
+- **No dumps; quiz.** The author's part is chosen, not typed: each piece that carries the milestone's concept is asked as a quiz — multiple choice or fill-in-the-blank — and the chosen answer goes into the code. Every wrong option is a mistake actually compiled or tested beforehand, and a wrong pick is answered with what the compiler or the tests really said.
 - **Diagnose the stuck layer.** When the author says "I don't follow," do not repeat the same explanation. First separate *purpose / concept / placement / syntax*, then treat that layer. If placement is stuck, **run an execution trace and show it**. If syntax is stuck, show the finished form and let them read it — syntax cannot be derived.
 - **Small steps.** Advance one milestone at a time as listed in the README roadmap. One milestone = one Rust concept + one slice of functionality.
 - **Keep the learning wiki.** Each milestone records its concepts in `docs/learn/concepts/<concept>.md` (atomic pages, `[[wikilink]]` >= 2, and a "Pitfalls hit" section **whenever that concept actually tripped someone up** — inventing one where nothing went wrong would be a lie, and the milestone log is where the full list lives anyway), and updates the `docs/learn/index.md` index and the `docs/learn/milestones/M*.md` journey log. This practice is itself the artifact of goal 2.
