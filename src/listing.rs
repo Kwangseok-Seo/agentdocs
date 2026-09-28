@@ -311,6 +311,13 @@ mod tests {
     }
 
     #[test]
+    fn a_term_that_ends_on_the_last_column_still_fits() {
+        // 56 + 1 + 3 = 60 columns: the term ends exactly where the room does.
+        let line = format!("{}xadr", "가".repeat(28));
+        assert_eq!(around(&line, &words(&["adr"]), 60), line);
+    }
+
+    #[test]
     fn a_term_past_the_width_in_columns_is_brought_into_view() {
         // 33 characters but 63 columns: a character count would call it a fit
         // and cut the term off the end.

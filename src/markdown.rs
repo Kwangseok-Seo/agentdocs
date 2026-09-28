@@ -4,7 +4,8 @@ use std::ops::Range;
 use pulldown_cmark::{Alignment, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// The bullets of a list, then of a list inside it, then of any deeper one.
 const BULLETS: [&str; 3] = ["•", "◦", "▪"];
@@ -442,7 +443,11 @@ impl<'a> Renderer<'a> {
                     Some(heading) => heading.iter().map(|span| Span::styled(span.content.clone(), span.style.patch(label))).collect(),
                     None => Vec::new(),
                 };
-                spans.push(Span::styled(": ", label));
+                // A column headed by nothing, such as a column of row labels,
+                // shows its cells alone rather than behind a bare ": ".
+                if cell_width(&spans) > 0 {
+                    spans.push(Span::styled(": ", label));
+                }
                 spans.extend(cell);
                 self.hanging(spans);
             }
@@ -525,44 +530,132 @@ fn blank_above(text: &str, start: usize) -> bool {
 
 /// `spans` laid out in rows no wider than `width`, `first` in front of the
 /// first row and `rest` in front of every row after it. A word that does not
-/// fit moves to the next row whole; one wider than a whole row is cut where
-/// the row ends. A space that does not fit ends its row and is dropped.
+/// fit moves to the next row whole, whatever styles it is written in. It is
+/// cut where the row ends instead when no row is wide enough for it, or when
+/// only spaces stand before it — a line of code's indentation, which the move
+/// would leave alone on a row. Spaces with no room left after them are
+/// dropped, ending the row when a word stands before them.
+///
+/// The rows are cut here rather than by ratatui's wrapping, for two reasons.
+/// A row wrapped inside a list item or a quote has to start behind the item's
+/// indentation or the quote's bar, which ratatui has no way to put there. And
+/// ratatui lets a word that ends in a wide character reach one cell past the
+/// edge, over the border.
 fn wrap<'a>(first: Vec<Span<'a>>, rest: Vec<Span<'a>>, spans: Vec<Span<'a>>, width: usize) -> Vec<Line<'a>> {
-    let indent: usize = rest.iter().map(Span::width).sum();
-    let mut rows = Vec::new();
-    let mut used: usize = first.iter().map(Span::width).sum();
-    let mut row = first;
-    // Whether the row holds anything yet besides what is in front of it.
-    let mut empty = true;
-
-    for mut piece in spans.into_iter().flat_map(words) {
-        if used + piece.width() > width {
-            let blank = piece.content.trim().is_empty();
-            if !empty || blank {
-                rows.push(Line::from(std::mem::replace(&mut row, rest.clone())));
-                used = indent;
-                empty = true;
+    let mut rows = Rows::new(first, rest, width);
+    for word in whole_words(spans) {
+        let blank = word.iter().all(|piece| piece.content.trim().is_empty());
+        // Spaces need room for something to follow them.
+        if !rows.fits(word.iter().map(Span::width).sum::<usize>() + usize::from(blank)) {
+            if rows.shown {
+                rows.end_row();
             }
             if blank {
                 continue;
             }
-            while !piece.content.is_empty() && used + piece.width() > width {
-                let (head, tail) = cut(piece, width.saturating_sub(used));
-                row.push(head);
-                rows.push(Line::from(std::mem::replace(&mut row, rest.clone())));
-                used = indent;
-                piece = tail;
-            }
-            if piece.content.is_empty() {
-                continue;
-            }
         }
-        used += piece.width();
-        row.push(piece);
-        empty = false;
+        // The word fits now, or it cannot be moved: then its pieces go in one
+        // at a time, each cut where the row ends.
+        for piece in word {
+            if rows.shown && !rows.fits(piece.width()) {
+                rows.end_row();
+            }
+            rows.fill(piece);
+        }
     }
-    rows.push(Line::from(row));
-    rows
+    rows.finish()
+}
+
+/// Rows being filled from the left, for `wrap`.
+struct Rows<'a> {
+    width: usize,
+    /// What goes in front of every row after the first, and how wide it is.
+    rest: Vec<Span<'a>>,
+    indent: usize,
+    /// The rows finished so far, and the one being filled.
+    done: Vec<Line<'a>>,
+    row: Vec<Span<'a>>,
+    used: usize,
+    /// Whether the row holds anything yet besides what is in front of it,
+    /// and whether it holds anything but spaces.
+    empty: bool,
+    shown: bool,
+}
+
+impl<'a> Rows<'a> {
+    fn new(first: Vec<Span<'a>>, rest: Vec<Span<'a>>, width: usize) -> Self {
+        let used = first.iter().map(Span::width).sum();
+        let indent = rest.iter().map(Span::width).sum();
+        Rows { width, rest, indent, done: Vec::new(), row: first, used, empty: true, shown: false }
+    }
+
+    /// Whether `width` more cells fit in the row.
+    fn fits(&self, width: usize) -> bool {
+        self.used + width <= self.width
+    }
+
+    fn end_row(&mut self) {
+        let row = std::mem::replace(&mut self.row, self.rest.clone());
+        self.done.push(Line::from(row));
+        self.used = self.indent;
+        self.empty = true;
+        self.shown = false;
+    }
+
+    /// `piece` put in the row, which ends wherever the next grapheme would
+    /// pass its edge. A grapheme — `⚠️`, a flag, a family of emoji — takes
+    /// several characters and is never split between rows. An empty row takes
+    /// one even when it does not fit, so that every row takes something.
+    ///
+    /// Each grapheme is measured once: measuring the rest of the piece anew
+    /// for every row would make a long line take time by the square of its
+    /// length.
+    fn fill(&mut self, piece: Span<'a>) {
+        let mut start = 0;
+        for (i, grapheme) in piece.content.grapheme_indices(true) {
+            let width = grapheme.width();
+            if !self.empty && !self.fits(width) {
+                if start < i {
+                    self.row.push(Span::styled(part(&piece.content, start..i), piece.style));
+                }
+                self.end_row();
+                start = i;
+            }
+            self.used += width;
+            self.empty = false;
+            self.shown |= !grapheme.trim().is_empty();
+        }
+        if start < piece.content.len() {
+            self.row.push(Span::styled(part(&piece.content, start..piece.content.len()), piece.style));
+        }
+    }
+
+    /// Every row. A row left with nothing in it is not one, unless it is
+    /// the first: a space that did not fit ended the row before it.
+    fn finish(mut self) -> Vec<Line<'a>> {
+        if !self.empty || self.done.is_empty() {
+            self.done.push(Line::from(self.row));
+        }
+        self.done
+    }
+}
+
+/// `spans` cut into words and the runs of spaces between them. A word is
+/// everything between two spaces, so it can take several pieces: `**bold**,`
+/// is one word in two styles. So can a run of spaces: in `` `## ` heading ``
+/// the space inside the backticks and the one after them are one run.
+fn whole_words<'a>(spans: Vec<Span<'a>>) -> Vec<Vec<Span<'a>>> {
+    let mut words_so_far: Vec<Vec<Span<'a>>> = Vec::new();
+    let mut last_blank = None;
+    for piece in spans.into_iter().flat_map(words) {
+        let blank = piece.content.trim().is_empty();
+        match words_so_far.last_mut() {
+            Some(word) if last_blank == Some(blank) => word.push(piece),
+            _ => words_so_far.push(vec![piece]),
+        }
+        last_blank = Some(blank);
+    }
+    words_so_far
 }
 
 /// A span cut into its words and the runs of spaces between them, each
@@ -583,25 +676,6 @@ fn words(span: Span<'_>) -> Vec<Span<'_>> {
         pieces.push(Span::styled(part(&span.content, start..span.content.len()), span.style));
     }
     pieces
-}
-
-/// `piece` cut after as many characters as fit in `room` — at least one,
-/// so that every row takes something.
-fn cut(piece: Span<'_>, room: usize) -> (Span<'_>, Span<'_>) {
-    let mut used = 0;
-    let mut at = piece.content.len();
-    for (i, c) in piece.content.char_indices() {
-        // A control character counts as `width` counts it for a whole string.
-        let w = c.width().unwrap_or(1);
-        if i > 0 && used + w > room {
-            at = i;
-            break;
-        }
-        used += w;
-    }
-    let head = Span::styled(part(&piece.content, 0..at), piece.style);
-    let tail = Span::styled(part(&piece.content, at..piece.content.len()), piece.style);
-    (head, tail)
 }
 
 /// The bytes `range` of a piece of text — still borrowed from the file when
@@ -740,6 +814,12 @@ mod tests {
     }
 
     #[test]
+    fn a_column_without_a_heading_shows_its_cells_alone() {
+        // Seen in rule-format: a first column of row labels, headed by nothing.
+        assert_eq!(narrow("| | b |\n|---|---|\n| x | y |", 4), ["x", "b: y"]);
+    }
+
+    #[test]
     fn a_cell_keeps_its_inline_styles() {
         assert_eq!(style_of("| a |\n|---|\n| `x` |", "x").fg, Some(Color::Yellow));
     }
@@ -803,6 +883,9 @@ mod tests {
     fn frontmatter_from_a_crlf_file_reads_the_same() {
         let text = "---\r\nname: a\r\ndescription: >\r\n  one\r\n---\r\n";
         assert_eq!(plain(text), ["name: a", "description: >", "  one"]);
+        // `plain` trims the ends of rows, where a carriage return would be.
+        let rows = render(text, 80);
+        assert!(rows.iter().flat_map(|row| &row.spans).all(|span| !span.content.contains('\r')), "{rows:?}");
     }
 
     // ---------------------------------------------------------------- lists
@@ -887,6 +970,28 @@ mod tests {
     }
 
     #[test]
+    fn a_line_of_code_wraps_between_words() {
+        assert_eq!(narrow("```\nfoo barbaz\n```", 8), ["foo", "barbaz"]);
+    }
+
+    #[test]
+    fn indentation_is_never_left_alone_on_a_row() {
+        // Seen in cli-printing-press: moved down whole, the word left its
+        // indentation alone on a row of spaces.
+        let text = "```go\n\trootCmd.Flags().BoolVar(&asJSON, x)\n```";
+        assert_eq!(narrow(text, 16), ["    rootCmd.Flag", "s().BoolVar(&asJ", "SON, x)"]);
+        // Indentation as wide as the row leaves no room after it.
+        assert_eq!(narrow("```\n        \u{2514}\u{2500} x\n```", 8), ["\u{2514}\u{2500} x"]);
+    }
+
+    #[test]
+    fn spaces_at_the_end_of_a_line_of_code_take_no_row() {
+        assert_eq!(narrow("```\nab      \n```", 4), ["ab"]);
+        // A line of nothing but spaces is still a line.
+        assert_eq!(narrow("```\na\n      \nb\n```", 4), ["a", "", "b"]);
+    }
+
+    #[test]
     fn a_code_block_in_a_list_item_stays_in_the_item() {
         assert_eq!(plain("- item\n\n  ```\n  code\n  ```"), ["• item", "", "  code"]);
     }
@@ -947,8 +1052,30 @@ mod tests {
     }
 
     #[test]
+    fn a_word_of_two_styles_moves_to_the_next_row_whole() {
+        // `bb` and `,cc` touch: one word to the eye, two pieces to the parser.
+        assert_eq!(narrow("aaaa `bb`,cc", 7), ["aaaa", "bb,cc"]);
+        // Seen in session-retro: a link's address left its `(` behind.
+        assert_eq!(narrow("aaaa [t](uu)", 8), ["aaaa t", "(uu)"]);
+    }
+
+    #[test]
+    fn a_word_of_two_styles_wider_than_a_row_never_passes_the_edge() {
+        // The first style fills the row; the second starts the next one.
+        assert_eq!(narrow("`aaaaa`bb", 5), ["aaaaa", "bb"]);
+    }
+
+    #[test]
     fn a_word_wider_than_a_row_is_cut_where_the_row_ends() {
         assert_eq!(narrow("abcdefghij", 4), ["abcd", "efgh", "ij"]);
+        // Moved off a row that holds a word, it starts the next row.
+        assert_eq!(narrow("aa bbbbbbbbbb", 4), ["aa", "bbbb", "bbbb", "bb"]);
+    }
+
+    #[test]
+    fn a_row_too_narrow_for_a_character_still_takes_one() {
+        // Rather than being left empty, which would make a row for nothing.
+        assert_eq!(narrow("한글", 1), ["한", "글"]);
     }
 
     #[test]
@@ -970,6 +1097,41 @@ mod tests {
     #[test]
     fn a_wide_character_is_never_split_across_rows() {
         assert_eq!(narrow("123456789한글", 10), ["123456789", "한글"]);
+    }
+
+    #[test]
+    fn a_grapheme_is_never_split_across_rows() {
+        // `⚠️` is two characters in two cells; counted one character at a
+        // time it took one cell, and the row passed the edge.
+        let warning = "\u{26A0}\u{FE0F}";
+        assert_eq!(narrow(&format!("abc{warning}"), 4), ["abc", warning]);
+        // A flag is two characters, a family five joined by zero-width joiners.
+        let flag = "\u{1F1F0}\u{1F1F7}";
+        assert_eq!(narrow(&format!("a{flag}"), 2), ["a", flag]);
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        assert_eq!(narrow(&format!("a{family}"), 3), [format!("a{family}")]);
+    }
+
+    #[test]
+    fn a_space_that_does_not_fit_never_takes_a_row_of_its_own() {
+        // An indented line of frontmatter, its indentation wider than the row.
+        assert_eq!(narrow("---\nk:\n      deep\n---", 4), ["k:", "deep"]);
+        // A line of frontmatter with spaces after its value.
+        assert_eq!(narrow("---\nname: abc   \n---", 9), ["name: abc"]);
+        // Seen in cli-printing-press: two spaces in two styles are one run,
+        // and none of it starts the next row.
+        assert_eq!(narrow("the next `## ` heading", 11), ["the next ##", "heading"]);
+    }
+
+    #[test]
+    fn a_long_line_without_spaces_is_cut_in_one_pass() {
+        // Measuring what was left of the line again for every row took time
+        // by the square of its length: in a release build 100 KB took 39 ms,
+        // and 400 KB 635 ms. Now 400 KB takes 7 ms.
+        let text = "x".repeat(400_000);
+        let start = std::time::Instant::now();
+        assert_eq!(render(&text, 80).len(), 5_000);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
     }
 
     #[test]
