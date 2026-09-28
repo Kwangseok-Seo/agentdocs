@@ -25,7 +25,7 @@ pub fn write(path: &Path, text: &str) {
 }
 
 pub fn names(walked: &Walked) -> Vec<&str> {
-    walked.entries.iter().map(|e| e.name.as_str()).collect()
+    walked.entries().into_iter().map(|e| e.name.as_str()).collect()
 }
 
 /// An Entry named `name`, as if its file had held `text`.

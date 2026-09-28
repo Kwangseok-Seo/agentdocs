@@ -18,6 +18,19 @@ pub enum EntryKind {
     Bundle { lead: Option<PathBuf> },
 }
 
+/// One row of what a Walk found: an Entry, or a directory with at least one
+/// Entry somewhere below it.
+///
+/// A directory holds any number of rows, and a `Vec` is what holds them. It
+/// also keeps a `Node` one fixed size: the rows live elsewhere, and a `Node`
+/// carries only where they are. A `Node` held directly inside a `Node` would
+/// never end, and the compiler refuses it (E0072).
+#[derive(Debug)]
+pub enum Node {
+    Entry(Entry),
+    Dir { path: PathBuf, children: Vec<Node> },
+}
+
 impl Entry {
     /// The file whose frontmatter describes this Entry: the file itself, or the
     /// Bundle's Lead. A Bundle without a Lead has nothing to read.

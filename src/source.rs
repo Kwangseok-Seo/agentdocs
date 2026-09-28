@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::entry::{Entry, EntryKind};
+use crate::entry::{Entry, EntryKind, Node};
 
 pub enum Scope {
     Global,
@@ -27,7 +27,7 @@ fn md_files(dir: &Path) -> io::Result<Walked> {
         // left to `md_entry`, which decides by name: going to see what it points
         // at is walking into it, and a link is never walked into.
         if ft.is_dir() { continue };
-        if let Some(entry) = md_entry(path) { out.entries.push(entry); }
+        if let Some(entry) = document(path) { out.nodes.push(Node::Entry(entry)); }
     }
     Ok(out)
 }
@@ -42,13 +42,13 @@ fn md_tree(dir: &Path) -> io::Result<Walked> {
         let path = item.path();
         if ft.is_dir() {
             match md_tree(&path) {
-                Ok(sub) => out.absorb(sub),
+                Ok(sub) => out.nest(path, sub),
                 Err(_) => out.unreadable += 1,
             }
-        } else if let Some(entry) = md_entry(path) {
+        } else if let Some(entry) = document(path) {
             // Not a directory, so a candidate document — a link included, since
             // it is listed by name rather than followed.
-            out.entries.push(entry);
+            out.nodes.push(Node::Entry(entry));
         }
     }
     Ok(out)
@@ -75,13 +75,15 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
         let lead_path = path.join("SKILL.md");
         let lead = if lead_path.is_file() { Some(lead_path) } else { None };
 
-        out.entries.push(Entry {
+        let mut entry = Entry {
             name: name.to_string_lossy().to_string(),
             path,
             kind: EntryKind::Bundle { lead },
             description: None,
             text: None,
-        });
+        };
+        entry.load_frontmatter();
+        out.nodes.push(Node::Entry(entry));
     }
     Ok(out)
 }
@@ -99,16 +101,11 @@ impl Source {
     }
 
     pub fn entries(&self) -> io::Result<Walked> {
-        let mut out = match self.walk {
+        match self.walk {
             Walk::MarkdownFiles => md_files(&self.path),
             Walk::BundleDirs => bundle_dirs(&self.path),
             Walk::MarkdownTree => md_tree(&self.path),
-        }?;
-
-        for entry in &mut out.entries {
-            entry.load_frontmatter();
         }
-        Ok(out)
     }
 }
 
@@ -132,19 +129,42 @@ pub fn find_project_root(start: &Path, home: &Path) -> Option<PathBuf> {
     Some(start.to_path_buf())                    // nothing found: the current directory is the root
 }
 
-/// What one Walk found: the Entries it could list, and how many things it could
-/// not read. A count that hides its own blind spots is a wrong count.
+/// What one Walk found: the Entries it could list, in the shape of the
+/// directories it found them in, and how many things it could not read. A
+/// count that hides its own blind spots is a wrong count.
 #[derive(Debug, Default)]
 pub struct Walked {
-    pub entries: Vec<Entry>,
+    pub nodes: Vec<Node>,
     pub unreadable: usize,
 }
 
 impl Walked {
-    /// Fold a subdirectory's findings into this one.
-    fn absorb(&mut self, other: Walked) {
-        self.entries.extend(other.entries);
-        self.unreadable += other.unreadable;
+    /// Keep a subdirectory's findings as one row that holds them. A directory
+    /// with no Entry anywhere below it is not a row, but what could not be
+    /// read down there still counts.
+    fn nest(&mut self, path: PathBuf, sub: Walked) {
+        self.unreadable += sub.unreadable;
+        if !sub.nodes.is_empty() {
+            self.nodes.push(Node::Dir { path, children: sub.nodes });
+        }
+    }
+
+    /// Every Entry, with each directory's in the place the directory stands —
+    /// the order the Walk found them in.
+    pub fn entries(&self) -> Vec<&Entry> {
+        let mut out = Vec::new();
+        gather(&self.nodes, &mut out);
+        out
+    }
+}
+
+/// Add every Entry among `nodes` to `out`, going down into each directory.
+fn gather<'a>(nodes: &'a [Node], out: &mut Vec<&'a Entry>) {
+    for node in nodes {
+        match node {
+            Node::Entry(entry) => out.push(entry),
+            Node::Dir { children, .. } => gather(children, out),
+        }
     }
 }
 
@@ -157,6 +177,14 @@ pub fn md_entry(path: PathBuf) -> Option<Entry> {
     let name = path.file_stem()?.to_string_lossy().to_string();
 
     Some(Entry { name, path, kind: EntryKind::File, description: None, text: None })
+}
+
+/// A `.md` file as a Walk lists it: an Entry, named and described by its
+/// frontmatter where it has one.
+fn document(path: PathBuf) -> Option<Entry> {
+    let mut entry = md_entry(path)?;
+    entry.load_frontmatter();
+    Some(entry)
 }
 
 #[cfg(test)]
@@ -191,19 +219,74 @@ mod tests {
 
     // ------------------------------------------------------------------ Walked
 
+    /// The tree as indented lines: a directory by its name and a slash, an
+    /// Entry by its name. Each level is sorted, since the order `read_dir`
+    /// gives is the platform's.
+    fn outline(nodes: &[Node], depth: usize) -> Vec<String> {
+        let mut level: Vec<(String, Vec<String>)> = nodes
+            .iter()
+            .map(|node| match node {
+                Node::Entry(entry) => (entry.name.clone(), Vec::new()),
+                Node::Dir { path, children } => (
+                    format!("{}/", path.file_name().unwrap().to_string_lossy()),
+                    outline(children, depth + 1),
+                ),
+            })
+            .collect();
+        level.sort();
+        level
+            .into_iter()
+            .flat_map(|(name, below)| std::iter::once(format!("{}{name}", "  ".repeat(depth))).chain(below))
+            .collect()
+    }
+
+    fn found(name: &str) -> Node {
+        Node::Entry(md_entry(PathBuf::from(format!("{name}.md"))).unwrap())
+    }
+
     #[test]
-    fn absorbing_adds_both_the_entries_and_the_blind_spots() {
+    fn nesting_keeps_a_subdirectory_as_one_row_and_adds_its_blind_spots() {
         let mut a = Walked::default();
-        a.entries.push(md_entry(PathBuf::from("one.md")).unwrap());
+        a.nodes.push(found("one"));
         a.unreadable = 1;
 
         let mut b = Walked::default();
-        b.entries.push(md_entry(PathBuf::from("two.md")).unwrap());
+        b.nodes.push(found("two"));
         b.unreadable = 2;
 
-        a.absorb(b);
-        assert_eq!(a.entries.len(), 2);
+        a.nest(PathBuf::from("sub"), b);
+        assert_eq!(outline(&a.nodes, 0), vec!["one", "sub/", "  two"]);
         assert_eq!(a.unreadable, 3);
+    }
+
+    #[test]
+    fn a_subdirectory_with_nothing_listed_is_no_row_but_its_blind_spots_count() {
+        let mut a = Walked::default();
+        a.nodes.push(found("one"));
+
+        let b = Walked { nodes: Vec::new(), unreadable: 2 };
+        a.nest(PathBuf::from("sub"), b);
+        assert_eq!(outline(&a.nodes, 0), vec!["one"]);
+        assert_eq!(a.unreadable, 2);
+    }
+
+    #[test]
+    fn every_entry_is_gathered_where_its_directory_stands() {
+        let walked = Walked {
+            nodes: vec![
+                found("a"),
+                Node::Dir {
+                    path: PathBuf::from("sub"),
+                    children: vec![
+                        found("b"),
+                        Node::Dir { path: PathBuf::from("sub/deep"), children: vec![found("c")] },
+                    ],
+                },
+                found("d"),
+            ],
+            unreadable: 0,
+        };
+        assert_eq!(names(&walked), vec!["a", "b", "c", "d"]);
     }
 
     // --------------------------------------------------------------- md_files
@@ -221,7 +304,7 @@ mod tests {
     fn an_empty_directory_reports_zero() {
         let dir = scratch("empty");
         let walked = md_files(&dir).unwrap();
-        assert_eq!(walked.entries.len(), 0);
+        assert_eq!(walked.entries().len(), 0);
         assert_eq!(walked.unreadable, 0);
     }
 
@@ -240,7 +323,7 @@ mod tests {
         let dir = scratch("oops");
         fs::create_dir_all(dir.join("oops.md")).unwrap();
         let walked = md_files(&dir).unwrap();
-        assert_eq!(walked.entries.len(), 0);
+        assert_eq!(walked.entries().len(), 0);
     }
 
     #[test]
@@ -270,6 +353,21 @@ mod tests {
     }
 
     #[test]
+    fn a_tree_keeps_the_directories_it_found_its_entries_in() {
+        let dir = scratch("tree-shape");
+        write(&dir.join("a.md"), "# a");
+        write(&dir.join("sub").join("b.md"), "# b");
+        write(&dir.join("sub").join("deep").join("c.md"), "# c");
+        write(&dir.join("sub").join("notes.txt"), "ignored");
+        write(&dir.join("text-only").join("notes.txt"), "no document here");
+        fs::create_dir_all(dir.join("empty")).unwrap();
+
+        // `text-only/` and `empty/` hold no Entry, so they are no row.
+        let walked = md_tree(&dir).unwrap();
+        assert_eq!(outline(&walked.nodes, 0), vec!["a", "sub/", "  b", "  deep/", "    c"]);
+    }
+
+    #[test]
     fn a_tree_whose_own_directory_is_absent_fails() {
         let dir = scratch("treeabsent").join("nope");
         assert_eq!(md_tree(&dir).unwrap_err().kind(), io::ErrorKind::NotFound);
@@ -294,7 +392,7 @@ mod tests {
         fs::create_dir_all(dir.join("beta")).unwrap();
         let walked = bundle_dirs(&dir).unwrap();
         assert_eq!(names(&walked), vec!["beta"]);
-        match &walked.entries[0].kind {
+        match &walked.entries()[0].kind {
             EntryKind::Bundle { lead } => assert!(lead.is_none()),
             EntryKind::File => panic!("a directory became a file entry"),
         }
@@ -322,7 +420,7 @@ mod tests {
         let src = Source::new("skills", dir, Scope::Global, Walk::BundleDirs);
         let walked = src.entries().unwrap();
         assert_eq!(names(&walked), vec!["actual-name"]);
-        assert_eq!(walked.entries[0].description.as_deref(), Some("from the lead"));
+        assert_eq!(walked.entries()[0].description.as_deref(), Some("from the lead"));
     }
 
     #[test]
@@ -398,8 +496,8 @@ mod tests {
 
         let src = Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles);
         let walked = src.entries().unwrap();
-        assert!(walked.entries[0].matches(&words(&["검증"])));
-        assert_eq!(walked.entries[0].first_hit(&words(&["검증"])), Some((3, "body says 검증")));
+        assert!(walked.entries()[0].matches(&words(&["검증"])));
+        assert_eq!(walked.entries()[0].first_hit(&words(&["검증"])), Some((3, "body says 검증")));
     }
 
     #[test]
@@ -409,9 +507,9 @@ mod tests {
 
         let src = Source::new("skills", dir, Scope::Global, Walk::BundleDirs);
         let walked = src.entries().unwrap();
-        assert_eq!(walked.entries[0].text, None);
-        assert!(walked.entries[0].matches(&words(&["beta"])));
-        assert!(!walked.entries[0].matches(&words(&["anything"])));
+        assert_eq!(walked.entries()[0].text, None);
+        assert!(walked.entries()[0].matches(&words(&["beta"])));
+        assert!(!walked.entries()[0].matches(&words(&["anything"])));
     }
 
     #[test]
@@ -427,7 +525,7 @@ mod tests {
 
         let src = Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles);
         let walked = src.entries().unwrap();
-        let entry = &walked.entries[0];
+        let entry = &walked.entries()[0];
         assert_eq!(entry.description.as_deref(), Some("still read"));
         assert!(entry.matches(&words(&["adr"])));
         assert_eq!(entry.first_hit(&words(&["adr"])), Some((5, "mentions adr \u{fffd} here")));
@@ -496,7 +594,7 @@ mod tests {
         let src = Source::new("skills", skills, Scope::Global, Walk::BundleDirs);
         let walked = src.entries().unwrap();
         assert_eq!(names(&walked), vec!["through-a-link"]);
-        assert_eq!(walked.entries[0].description.as_deref(), Some("read past the link"));
+        assert_eq!(walked.entries()[0].description.as_deref(), Some("read past the link"));
     }
 
     #[test]
@@ -515,7 +613,7 @@ mod tests {
         // disappear from the count without leaving anything behind.
         let walked = bundle_dirs(&skills).unwrap();
         assert_eq!(names(&walked), vec!["ghost"]);
-        match &walked.entries[0].kind {
+        match &walked.entries()[0].kind {
             EntryKind::Bundle { lead } => assert!(lead.is_none()),
             EntryKind::File => panic!("a dangling directory link became a file entry"),
         }

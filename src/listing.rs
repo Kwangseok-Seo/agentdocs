@@ -111,11 +111,12 @@ pub fn reason(kind: io::ErrorKind) -> &'static str {
 /// were kept out of the whole, when searching — and how many things could not
 /// be read. The listing and the screen both print it, so there is one wording.
 pub fn heading(name: &str, walked: &Walked, terms: &[String]) -> String {
-    let total = walked.entries.len();
+    let entries = walked.entries();
+    let total = entries.len();
     let mut heading = if terms.is_empty() {
         format!("  {name}:{total}")
     } else {
-        let kept = walked.entries.iter().filter(|e| e.matches(terms)).count();
+        let kept = entries.iter().filter(|e| e.matches(terms)).count();
         format!("  {name}:{kept}/{total}")
     };
     if walked.unreadable > 0 {
@@ -150,7 +151,7 @@ fn row(entry: &Entry) -> String {
 /// reason as `row`: a test can read what the terminal would have been given.
 pub fn listing(name: &str, walked: &Walked, terms: &[String]) -> Vec<String> {
     let mut lines = vec![heading(name, walked, terms)];
-    for entry in walked.entries.iter().filter(|e| e.matches(terms)) {
+    for entry in walked.entries().into_iter().filter(|e| e.matches(terms)) {
         lines.push(row(entry));
         // Out of somebody else's file, so through `around` and with it
         // `printable`, like every other field on screen.
@@ -165,6 +166,7 @@ pub fn listing(name: &str, walked: &Walked, terms: &[String]) -> Vec<String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use crate::entry::Node;
     use crate::source::md_entry;
     use crate::testutil::*;
 
@@ -398,7 +400,7 @@ mod tests {
         let mut alpha = entry_with("alpha", Some("ADR notes\nmore"));
         alpha.description = Some("first".to_string());
         let beta = entry_with("beta", Some("nothing here"));
-        Walked { entries: vec![alpha, beta], unreadable }
+        Walked { nodes: vec![Node::Entry(alpha), Node::Entry(beta)], unreadable }
     }
 
     #[test]
@@ -436,8 +438,42 @@ mod tests {
     #[test]
     fn the_matched_line_is_brought_into_view() {
         let long = format!("{} adr tail", "x".repeat(100));
-        let walked = Walked { entries: vec![entry_with("gamma", Some(&long))], unreadable: 0 };
+        let walked = Walked { nodes: vec![Node::Entry(entry_with("gamma", Some(&long)))], unreadable: 0 };
         let lines = listing("docs", &walked, &words(&["adr"]));
         assert_eq!(lines[2], "      1: …xxxxxxxxx adr tail");
+    }
+
+    #[test]
+    fn a_tree_is_counted_and_listed_through_its_directories() {
+        // `docs/` as the Walk now keeps it: `learn/` holds `index` and the
+        // directory `concepts/`, which holds `slices`. The listing still reads
+        // as one list, in the order the Walk found them.
+        let walked = Walked {
+            nodes: vec![
+                Node::Entry(entry_with("README", None)),
+                Node::Dir {
+                    path: PathBuf::from("learn"),
+                    children: vec![
+                        Node::Entry(entry_with("index", None)),
+                        Node::Dir {
+                            path: PathBuf::from("learn/concepts"),
+                            children: vec![Node::Entry(entry_with("slices", None))],
+                        },
+                    ],
+                },
+                Node::Entry(entry_with("SPEC", None)),
+            ],
+            unreadable: 0,
+        };
+        assert_eq!(
+            listing("docs", &walked, &words(&[])),
+            vec![
+                "  docs:4".to_string(),
+                format!("    {:<32} -", "README"),
+                format!("    {:<32} -", "index"),
+                format!("    {:<32} -", "slices"),
+                format!("    {:<32} -", "SPEC"),
+            ]
+        );
     }
 }

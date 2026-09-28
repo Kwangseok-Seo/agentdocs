@@ -165,7 +165,7 @@ impl App {
             self.focus = Pane::Entries;
             let Some(line) = row_in(entries, at) else { return };
             let index = self.entries.offset() + line;
-            let len = self.walked().map_or(0, |walked| walked.entries.len());
+            let len = self.walked().map_or(0, |walked| walked.entries().len());
             if index < len {
                 self.entries.select(Some(index));
             }
@@ -276,7 +276,7 @@ impl App {
                 }
             }
             Pane::Entries => {
-                let len = self.walked().map_or(0, |walked| walked.entries.len());
+                let len = self.walked().map_or(0, |walked| walked.entries().len());
                 let at = self.entries.selected().unwrap_or(0);
                 if at + 1 < len {
                     self.entries.select(Some(at + 1));
@@ -327,7 +327,7 @@ impl App {
 
     /// The selected Entry, if there is one.
     fn entry(&self) -> Option<&Entry> {
-        self.walked()?.entries.get(self.entries.selected()?)
+        self.walked()?.entries().get(self.entries.selected()?).copied()
     }
 
     /// The preview inside its border, as last drawn: where text can be dragged over.
@@ -400,7 +400,7 @@ impl App {
     /// `Paragraph` would have dropped it.
     fn render_entries(&mut self, frame: &mut Frame, area: Rect) {
         let names: Vec<String> = match self.walked() {
-            Some(walked) => walked.entries.iter().map(|e| printable(&e.name)).collect(),
+            Some(walked) => walked.entries().into_iter().map(|e| printable(&e.name)).collect(),
             None => Vec::new(),
         };
 
@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn tab_hands_j_and_k_to_the_entries_and_the_preview_follows() {
         let mut app = three_rules("tui-tab");
-        let second = app.walked().unwrap().entries[1].name.clone();
+        let second = app.walked().unwrap().entries()[1].name.clone();
 
         press(&mut app, &[KeyCode::Tab, KeyCode::Char('j')]);
         assert_eq!(app.source, 0);
@@ -728,7 +728,7 @@ mod tests {
     #[test]
     fn clicking_an_entry_selects_it_its_pane_and_its_preview() {
         let mut app = three_rules("tui-click-entry");
-        let third = app.walked().unwrap().entries[2].name.clone();
+        let third = app.walked().unwrap().entries()[2].name.clone();
 
         click(&mut app, 35, 3);
         assert_eq!(app.entries.selected(), Some(2));
