@@ -412,15 +412,19 @@ impl App {
     /// The selected Entry's file drawn as Markdown, with any dragged-over text
     /// shown reversed.
     fn render_preview(&self, frame: &mut Frame, area: Rect) {
+        let width = area.width.saturating_sub(2);
         let lines = match self.entry() {
             None => Vec::new(),
             Some(entry) => match (&entry.text, entry.doc()) {
-                (Some(text), _) => markdown::render(text),
+                (Some(text), _) => markdown::render(text, width),
                 (None, None) => vec![Line::raw("(this Bundle has no SKILL.md)")],
                 (None, Some(_)) => vec![Line::raw("(the file could not be read)")],
             },
         };
 
+        // The rows already fit. ratatui's wrapping stays as a net for a row
+        // whose width it counts differently — without it, that row's end
+        // would be cut off rather than moved down.
         let preview = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .block(Block::bordered().title("Preview"));
@@ -1033,6 +1037,20 @@ mod tests {
         let mut app = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
         let rows = screen(&mut app, 120, 8).join("\n");
         assert!(rows.contains("(this Bundle has no SKILL.md)"), "{rows}");
+    }
+
+    #[test]
+    fn a_wide_character_at_the_end_of_a_row_leaves_the_border_alone() {
+        // Seen in M5 with ratatui's wrapping: 33 cells and a space, then a
+        // word five cells wide ending in 한, in a preview 38 wide — 한 went
+        // into the last cell inside and blanked the border beside it.
+        let dir = scratch("tui-wide-border");
+        write(&dir.join("wide.md"), &format!("{} 789한 end\n", "x".repeat(33)));
+        let mut app = app(vec![Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles)]);
+
+        let cells = draw(&mut app, 100, 8);
+        // Rows 1 to 5 are inside the border.
+        assert!((1..6).all(|y| cells[(99, y)].symbol() == "│"), "{:?}", screen(&mut app, 100, 8));
     }
 
     #[test]
