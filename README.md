@@ -13,25 +13,31 @@ So this repository is not a finished codebase. It is a **record of something gro
 
 ## Status
 
-**M5 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries, and the selected entry's file. `j`/`k` or the arrows move, `Tab` switches pane, a click selects, and **dragging across the preview copies the text** to the clipboard. The file is shown as it is on disk; rendering the Markdown is M6.
+**M6 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks, tables, and frontmatter without its fences. `j`/`k` or the arrows move, `Tab` switches pane, a click selects, and **dragging across the preview copies the text** to the clipboard.
 
 ```
-$ cd ~/projects/cli-maker && agentdocs        # a 100 x 14 terminal
-┌Sources───────────────────┐┌Entries───────────────────────┐┌Preview───────────────────────────────┐
-│GLOBAL                    ││dream                         ││---                                   │
-│  skills:6                ││get-api-docs                  ││name: dream                           │
-│  rules:14                ││grill-with-docs               ││description: "Memory consolidation    │
-│  agents:1                ││session-retro                 ││pass (auto-memory 시스템의 reflective │
-│  commands:1              ││synced                        ││reorganize). 최근 transcripts·기존    │
-│  agents/skills:1         ││to-html                       ││memory 파일을 종합해 새 신호를 topic  │
-│PROJECT cli-maker         ││                              ││파일에 병합하고, 모순/노후 항목을     │
-│  root md:3               ││                              ││정리하고, 인덱스를 다듬는다. Args:    │
-│  docs:80                 ││                              ││(없음)=현재 프로젝트 memory;          │
-│                          ││                              ││`user`=user-scope                     │
-│                          ││                              ││memory(`~/.claude/memory/`);          │
-└──────────────────────────┘└──────────────────────────────┘└──────────────────────────────────────┘
+$ cd ~/projects/cli-maker && agentdocs        # a 120 x 18 terminal; rules, then verify-your-evidence
+┌Sources───────────────────┐┌Entries───────────────────────┐┌Preview───────────────────────────────────────────────────┐
+│GLOBAL                    ││adr-context-format            ││# 증거물 자체를 검증한다 — 안 돌려 본 데모는 증거가 아니다│
+│  skills:6                ││adr-rationale-realization     ││                                                          │
+│  rules:14                ││check-your-guardrails         ││## 가드레일                                               │
+│  agents:1                ││derive-dont-duplicate         ││                                                          │
+│  commands:1              ││evidence-before-decision      ││데모·스켈레톤·측정 harness 도 건네기 전에 실행해 확인한다.│
+│  agents/skills:1         ││git-conventions               ││증거를 만드는 것과 그 증거가 주장을 증명하는 것은 다른    │
+│PROJECT cli-maker         ││karpathy-guidelines           ││일이다. 검증하지 않은 산출물은 결론의 근거로도, 사용자에게│
+│  root md:3               ││obey-your-own-spec            ││건네는 재료로도 쓰지 않는다.                              │
+│  docs:80                 ││performance                   ││                                                          │
+│                          ││report-guideline              ││## 어디서 깨지나                                          │
+│                          ││rule-format                   ││                                                          │
+│                          ││session-snapshot-rule         ││양상: 애초에 안 돈다                                      │
+│                          ││spec-before-first-build       ││점검: 건네기 직전 그 자리에서 빌드/실행                   │
+│                          ││verify-your-evidence          ││실측: M4: net/http 만 import 한 빈 몸통 → 사용자 빌드가   │
+│                          ││                              ││  imported and not used 로 막힘                           │
+└──────────────────────────┘└──────────────────────────────┘└──────────────────────────────────────────────────────────┘
  j/k ↓/↑ move   tab pane   click select   drag copy   q quit
 ```
+
+The table at the foot of that preview has three columns and does not fit a preview 58 wide, so each row becomes a block with every cell behind its column's heading; a table that fits is drawn as a grid. In a terminal, headings are bold and cyan, the table's headings cyan, and code yellow.
 
 With words, or with its output going to a pipe or a file, it prints the **listing** instead — which is also what an AI agent running it from its own shell gets ([ADR-0008](docs/adr/0008-screen-for-a-bare-command-at-a-terminal.md)). The listing is where M1–M4 happened: the binary discovers its sources, walks each one by its own rule, reads a name and description out of each entry's frontmatter, **says what it could not read instead of reporting zero**, and **searches**.
 
@@ -39,7 +45,7 @@ With words, or with its output going to a pipe or a file, it prints the **listin
 $ cd ~/projects/cli-maker && agentdocs | more   # abridged: the real output is 115 lines
 GLOBAL
   skills:6
-    dream                            Memory consolidation pass (auto-memory 시스템의 …
+    dream                            Memory consolidation pass (auto-memory 시스…
     get-api-docs                     Use this skill to get documentation for thir…
     grill-with-docs                  Grilling session that challenges your plan a…
     ...
@@ -48,7 +54,7 @@ GLOBAL
     adr-rationale-realization        -
     ...
   agents:1
-    session-seal                     Claude Code 세션 스냅샷 draft → sealed 승격 전담 agen…
+    session-seal                     Claude Code 세션 스냅샷 draft → sealed 승격 …
   commands:1
     session-seal                     -
   agents/skills:1
@@ -126,7 +132,7 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 | **M3** ✅ | Error handling + first tests | **`Result`, the `?` operator**, `#[cfg(test)]`, entry vs target |
 | **M4** ✅ | Search and filtering (still CLI) | **iterators & closures**, traits |
 | **M5** ✅ | TUI skeleton — three panes, key and mouse navigation, drag to copy | external crates, **the event loop**, modules, `Drop` |
-| **M6** | Markdown rendering | **lifetimes**, slices |
+| **M6** ✅ | Markdown rendering — headings, lists, quotes, code blocks, tables, frontmatter, wrapped by the renderer | **lifetimes**, slices, `Cow` |
 | **M7** | Bundle tree (expand / collapse) | recursive data structures, `Box` |
 | **M8** | Code block highlighting + scrolling — the wheel scrolls the preview, a drag can select past the rows in view | `syntect`, state management |
 | **M9** | `$EDITOR` delegation + file watching | `std::process`, **threads & channels** |

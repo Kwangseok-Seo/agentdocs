@@ -8,7 +8,7 @@ A wiki of the **Rust and tooling knowledge** accumulated while building agentdoc
 
 - [[ownership]] — one owner per value, move vs `Copy`, why the rule exists at all
 - [[borrowing]] — `&T` and `&mut T`, the three rules, and the silent bug each one prevents
-- [[owned-vs-borrowed-pairs]] — `String`/`&str`, `PathBuf`/`&Path`, and why signatures borrow in and own out
+- [[owned-vs-borrowed-pairs]] — `String`/`&str`, `PathBuf`/`&Path`, why signatures borrow in and own out, and `Cow` — what `&` and `clone()` do to a box
 - [[option-and-match]] — `Option`, `match` exhaustiveness, `if let`, guard clauses, and what `unwrap` throws away
 - [[paths]] — paths are not strings; `join`, `parent`, `extension`, `starts_with`, `display`
 - [[fs-read-dir]] — one level only, `Result` twice over, what `count()` really counts, recursion
@@ -29,6 +29,8 @@ A wiki of the **Rust and tooling knowledge** accumulated while building agentdoc
 - [[external-crates]] — crate vs package vs module, a version as a range, what `rust-version` holds back, and what one dependency costs
 - [[event-loop]] — draw everything, wait, change the state; raw mode, the alternate screen, mouse capture, and waking up without an event
 - [[drop-and-unwinding]] — what runs when a value goes, what a panic skips, why the screen needs a hook, and `let _` vs `let _name`
+- [[lifetimes]] — how long a borrow is valid, the three elision rules checked against every function here, `<'a>` on a type, and which way `'static` fits
+- [[slices]] — a window of start and length, why a window shows one run only, ranges, and bytes vs characters vs columns
 
 ## Milestones (`milestones/`)
 
@@ -40,3 +42,4 @@ The journey log: what was built, which concepts it required, and which pitfalls 
 - [M3](milestones/M3.md) — error handling and the first tests
 - [M4](milestones/M4.md) — search
 - [M5](milestones/M5.md) — the screen
+- [M6](milestones/M6.md) — Markdown in the preview

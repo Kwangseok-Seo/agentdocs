@@ -90,6 +90,8 @@ fn short(s: &str, width: usize) -> String {
 }
 ```
 
+That removed the panic and kept a second mistake: a Korean character is one character but two columns on screen, so 44 characters of Korean took 88. M6 counts columns instead — see [[slices]].
+
 ## A lowercase copy is not the same length
 
 Case-insensitive search lowercases both sides, which quietly produces a second string — and a position found in that copy is a position in the copy, not in the original:

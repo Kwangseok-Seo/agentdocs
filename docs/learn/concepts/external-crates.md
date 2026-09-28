@@ -38,7 +38,9 @@ release binary     231 KB →  231 KB after `cargo add` alone
 
 The third and fourth lines are the interesting pair. Adding the dependency cost build time at once and binary size not at all: the linker keeps only code that something calls, so the binary grew only when the [[event-loop]] started calling ratatui.
 
-Later crates cost nothing new. M5 added `base64` and `unicode-width` as direct dependencies at the versions already in `Cargo.lock` — `unicode-width` because ratatui measures cells with it, `base64` because another of ratatui's optional backends had locked it — so the lock gained two lines naming them and no new packages. Using the exact function ratatui measures width with, rather than a second opinion, is the point of the first.
+Later crates cost nothing new. M5 added `base64` and `unicode-width` as direct dependencies at the versions already in `Cargo.lock` — `unicode-width` because ratatui measures cells with it, `base64` because another of ratatui's optional backends had locked it — so the lock gained two lines naming them and no new packages. Using the exact function ratatui measures width with, rather than a second opinion, is the point of the first. M6's `unicode-segmentation` came the same way: one line in the lock, for the grapheme rule ratatui already follows.
+
+A crate's **features** are the other lever. M6's Markdown parser, pulldown-cmark, turns on by default `getopts`, the argument parser of its own command-line tool, and `html`, a writer this viewer never calls; with `default-features = false` it cost three compiled crates — itself, `unicase` and `memchr` — and parsed every one of this machine's 558 files, 6.1 MB, in 99 ms. `Cargo.lock` gained only two packages, 172 to 174: `memchr` was locked already, named by `regex`, `nom` and three others that nothing here compiles, and pulldown-cmark is the first dependency here that builds it. The two counts answer different questions — what the lock knows of, and what the compiler builds.
 
 ## A crate's traits come with it
 
