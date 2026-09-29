@@ -15,7 +15,10 @@ pub struct Entry {
 #[derive(Debug)]
 pub enum EntryKind {
     File,
-    Bundle { lead: Option<PathBuf> },
+    /// A directory made of a Lead and the supporting files it carries. `inside`
+    /// holds the rows below the Lead, and is `None` for a link standing in for
+    /// a Bundle: it is listed, and what is inside it is not asked (ADR-0007).
+    Bundle { lead: Option<PathBuf>, inside: Option<Vec<Node>> },
 }
 
 /// One row of what a Walk found: an Entry, or a directory with at least one
@@ -24,7 +27,8 @@ pub enum EntryKind {
 /// A directory holds any number of rows, and a `Vec` is what holds them. It
 /// also keeps a `Node` one fixed size: the rows live elsewhere, and a `Node`
 /// carries only where they are. A `Node` held directly inside a `Node` would
-/// never end, and the compiler refuses it (E0072).
+/// never end, and the compiler refuses it (E0072) — as it does when the way
+/// back to `Node` runs through `Entry` and a Bundle's `inside`.
 #[derive(Debug)]
 pub enum Node {
     Entry(Entry),
@@ -37,8 +41,8 @@ impl Entry {
     pub fn doc(&self) -> Option<&Path> {
         match &self.kind {
             EntryKind::File => Some(&self.path),
-            EntryKind::Bundle { lead: Some(lead) } => Some(lead),
-            EntryKind::Bundle { lead: None } => None,
+            EntryKind::Bundle { lead: Some(lead), .. } => Some(lead),
+            EntryKind::Bundle { lead: None, .. } => None,
         }
     }
 

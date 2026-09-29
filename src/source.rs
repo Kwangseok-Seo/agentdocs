@@ -75,10 +75,27 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
         let lead_path = path.join("SKILL.md");
         let lead = if lead_path.is_file() { Some(lead_path) } else { None };
 
+        // Only a directory is walked into. What a link stands in for is not
+        // asked at all — the entry itself says which it is (ADR-0007).
+        let inside = if ft.is_dir() {
+            match supporting(&path, lead.as_deref()) {
+                Ok(sub) => {
+                    out.unreadable += sub.unreadable;
+                    Some(sub.nodes)
+                }
+                Err(_) => {
+                    out.unreadable += 1;
+                    Some(Vec::new())
+                }
+            }
+        } else {
+            None
+        };
+
         let mut entry = Entry {
             name: name.to_string_lossy().to_string(),
             path,
-            kind: EntryKind::Bundle { lead },
+            kind: EntryKind::Bundle { lead, inside },
             description: None,
             text: None,
         };
@@ -86,6 +103,19 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
         out.nodes.push(Node::Entry(entry));
     }
     Ok(out)
+}
+
+/// What a Bundle holds besides its Lead, as a tree. The Lead is the Bundle's
+/// own row, so it is taken out — from the top level only: a `SKILL.md` further
+/// down belongs to a directory inside the Bundle, and is a supporting file like
+/// any other.
+fn supporting(dir: &Path, lead: Option<&Path>) -> io::Result<Walked> {
+    let mut walked = md_tree(dir)?;
+    walked.nodes.retain(|node| match node {
+        Node::Entry(entry) => Some(entry.path.as_path()) != lead,
+        Node::Dir { .. } => true,
+    });
+    Ok(walked)
 }
 
 pub struct Source {
@@ -393,7 +423,7 @@ mod tests {
         let walked = bundle_dirs(&dir).unwrap();
         assert_eq!(names(&walked), vec!["beta"]);
         match &walked.entries()[0].kind {
-            EntryKind::Bundle { lead } => assert!(lead.is_none()),
+            EntryKind::Bundle { lead, .. } => assert!(lead.is_none()),
             EntryKind::File => panic!("a directory became a file entry"),
         }
     }
@@ -405,6 +435,66 @@ mod tests {
         write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
         let walked = bundle_dirs(&dir).unwrap();
         assert_eq!(names(&walked), vec!["alpha"]);
+    }
+
+    /// The rows below a Bundle's Lead, or `None` where it was not walked into.
+    fn inside(entry: &Entry) -> Option<&[Node]> {
+        match &entry.kind {
+            EntryKind::Bundle { inside, .. } => inside.as_deref(),
+            EntryKind::File => panic!("{} is a file, not a Bundle", entry.name),
+        }
+    }
+
+    #[test]
+    fn a_bundle_holds_its_supporting_files_as_a_tree_without_its_lead() {
+        let dir = scratch("bundle-inside");
+        let alpha = dir.join("alpha");
+        write(&alpha.join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&alpha.join("REFERENCE.md"), "# supporting");
+        write(&alpha.join("examples").join("one.md"), "# example");
+        write(&alpha.join("scripts").join("run.py"), "print()");
+        write(&alpha.join("notes.txt"), "not a document");
+
+        // The supporting files are rows below the Bundle, not Entries of the
+        // Source: the count stays one.
+        let walked = bundle_dirs(&dir).unwrap();
+        assert_eq!(names(&walked), vec!["alpha"]);
+        let rows = inside(walked.entries()[0]).unwrap();
+        assert_eq!(outline(rows, 0), vec!["REFERENCE", "examples/", "  one"]);
+    }
+
+    #[test]
+    fn a_lead_further_down_is_a_supporting_file() {
+        // `synced/` on this machine holds eight skills, each with its own
+        // `SKILL.md` two levels down. Only the Bundle's own Lead is its row.
+        let dir = scratch("bundle-nested-lead");
+        let alpha = dir.join("alpha");
+        write(&alpha.join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&alpha.join("pdf").join("SKILL.md"), "---\nname: pdf\n---\n");
+        write(&alpha.join("pdf").join("forms.md"), "# forms");
+
+        let walked = bundle_dirs(&dir).unwrap();
+        let rows = inside(walked.entries()[0]).unwrap();
+        assert_eq!(outline(rows, 0), vec!["pdf/", "  forms", "  pdf"]);
+    }
+
+    #[test]
+    fn a_bundle_without_a_lead_holds_every_document() {
+        let dir = scratch("bundle-inside-nolead");
+        write(&dir.join("beta").join("README.md"), "# beta");
+
+        let walked = bundle_dirs(&dir).unwrap();
+        let rows = inside(walked.entries()[0]).unwrap();
+        assert_eq!(outline(rows, 0), vec!["README"]);
+    }
+
+    #[test]
+    fn a_bundle_holding_only_its_lead_has_nothing_below_it() {
+        let dir = scratch("bundle-inside-leadonly");
+        write(&dir.join("dream").join("SKILL.md"), "---\nname: dream\n---\n");
+
+        let walked = bundle_dirs(&dir).unwrap();
+        assert_eq!(inside(walked.entries()[0]).map(|rows| rows.len()), Some(0));
     }
 
     // --------------------------------------------------------- Source::entries
@@ -598,6 +688,24 @@ mod tests {
     }
 
     #[test]
+    fn a_bundle_reached_through_a_link_is_not_walked_into() {
+        // `grill-with-docs` on this machine is such a link: its Lead is read,
+        // and its two supporting files are listed under the Source that owns
+        // the directory, not under this one.
+        let dir = scratch("link-bundle-inside");
+        let skills = dir.join("skills");
+        fs::create_dir_all(&skills).unwrap();
+        write(&dir.join("target").join("SKILL.md"), "---\nname: linked\n---\n");
+        write(&dir.join("target").join("FORMAT.md"), "# supporting");
+        if !link_dir(&dir.join("target"), &skills.join("linked")) {
+            return;
+        }
+
+        let walked = bundle_dirs(&skills).unwrap();
+        assert!(inside(walked.entries()[0]).is_none());
+    }
+
+    #[test]
     fn a_bundle_whose_link_target_is_gone_is_still_listed() {
         let dir = scratch("link-dangling");
         let skills = dir.join("skills");
@@ -614,7 +722,7 @@ mod tests {
         let walked = bundle_dirs(&skills).unwrap();
         assert_eq!(names(&walked), vec!["ghost"]);
         match &walked.entries()[0].kind {
-            EntryKind::Bundle { lead } => assert!(lead.is_none()),
+            EntryKind::Bundle { lead, inside } => assert!(lead.is_none() && inside.is_none()),
             EntryKind::File => panic!("a dangling directory link became a file entry"),
         }
     }
