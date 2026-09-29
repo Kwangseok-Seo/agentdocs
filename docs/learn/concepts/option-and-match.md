@@ -30,6 +30,30 @@ let home = env::home_dir().unwrap();
 
 The **exhaustiveness** of `match` is the point: forgetting a case becomes a compile error rather than a runtime surprise.
 
+## `if let … else` is not checked
+
+An `if let` asks about one shape, and its `else` takes everything else, whatever that turns out to be. So when a variant is added, the compiler points at every `match` that does not name it, and at no `if let`. M7 added `Node::Unreadable`; with its arms taken out again, a build stops three times:
+
+```
+error[E0004]: non-exhaustive patterns: `&Node::Unreadable { .. }` not covered   (Node::children)
+error[E0004]: non-exhaustive patterns: `&Node::Unreadable { .. }` not covered   (gather)
+error[E0004]: non-exhaustive patterns: `&Node::Unreadable { .. }` not covered   (retain, in supporting)
+```
+
+`unread`, written as `if let Node::Unreadable … else if let Some(rows) = node.children()`, builds either way. There that is right — *anything else* is what it means — but it is also a place a new variant passes through unannounced. A `match` with `_ =>` is the same.
+
+## Two kinds of nothing
+
+A Bundle's `inside` is `Option<Vec<Node>>`, and its two empty values say different things:
+
+| what happened | `inside` | on this machine |
+|---|---|---|
+| the directory was not read — a link stands in for it ([ADR-0007](../../adr/0007-links-are-listed-not-followed.md)) | `None` | `grill-with-docs` in `~/.claude/skills` |
+| it was read, and holds nothing but its Lead | `Some` of an empty `Vec` | `dream` |
+| it was read, and holds rows | `Some` of rows | `session-retro` |
+
+`None` does not say the directory is empty. It says there is no result, because the question was never asked. The screen draws the first as `grill-with-docs (link)` and the second as plain `dream`, and neither opens. As a pattern, the empty case is `Some(rows) if rows.is_empty()`: `Some([])` is refused, since `[]` matches an array or a slice and this is a `Vec` — `E0529: expected an array or slice, found Vec<Node>`.
+
 ## `Result` has the same shape
 
 `Result<T, E>` is `Ok(value)` or `Err(error)`, and it opens exactly the same way — which is why learning `Option` first pays for both.
@@ -88,6 +112,14 @@ called `Result::unwrap()` on an `Err` value: Os { code: 3, kind: NotFound }
 
 **Which of the five is absent is nowhere in it.** With five sources you find it by eye; once a config file can add more, you cannot. That is why error handling is its own milestone (M3) rather than a detail — see [[fs-read-dir]] for the paths that fail.
 
+## Pitfalls hit — `None` read as "nothing in it"
+
+For a link standing in for a Bundle, `inside` was picked as `Some([])` four times across M7's slices 2 and 3, and a table, an execution trace and a drawing did not change the answer. A diagnostic question showed why: `None` was being read in its everyday sense, *there is nothing inside*. What settled it was the table above, put as a question of whether there is a result at all, followed by a prediction on the real screen — with the empty case written as the pattern for a link, `(link)` lands on `dream`, `get-api-docs` and `to-html` instead of `grill-with-docs`. That was answered right.
+
+## Pitfalls hit — expecting `if let … else` to be checked (not settled)
+
+Asked which of four functions stop at E0004 once `Unreadable` exists, the pick included `unread`, the `if let`, and left out two of the three `match`es above. Asked again with three small functions, `if let Node::Dir { .. } = node { true } else { false }` was again picked as stopping; it builds. Still open at the end of M7.
+
 ## Related
 
-[[ownership]] · [[paths]] · [[fs-read-dir]]
+[[ownership]] · [[paths]] · [[fs-read-dir]] · [[enums-and-data]] · [[recursive-data]]

@@ -13,31 +13,31 @@ So this repository is not a finished codebase. It is a **record of something gro
 
 ## Status
 
-**M6 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks, tables, and frontmatter without its fences. `j`/`k` or the arrows move, `Tab` switches pane, a click selects, and **dragging across the preview copies the text** to the clipboard.
+**M7 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries **as a tree**, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks, tables, and frontmatter without its fences. A skill **opens onto its supporting files**, and a project's `docs/` onto its directories. `j`/`k` or the arrows move, `l`/`h` open and close a row, `Tab` switches pane, a click selects, and **dragging across the preview copies the text** to the clipboard.
 
 ```
-$ cd ~/projects/cli-maker && agentdocs        # a 120 x 18 terminal; rules, then verify-your-evidence
+$ cd ~/projects/cli-maker && agentdocs        # a 120 x 18 terminal; skills, session-retro opened, RULE-FORMAT selected
 ┌Sources───────────────────┐┌Entries───────────────────────┐┌Preview───────────────────────────────────────────────────┐
-│GLOBAL                    ││adr-context-format            ││# 증거물 자체를 검증한다 — 안 돌려 본 데모는 증거가 아니다│
-│  skills:6                ││adr-rationale-realization     ││                                                          │
-│  rules:14                ││check-your-guardrails         ││## 가드레일                                               │
-│  agents:1                ││derive-dont-duplicate         ││                                                          │
-│  commands:1              ││evidence-before-decision      ││데모·스켈레톤·측정 harness 도 건네기 전에 실행해 확인한다.│
-│  agents/skills:1         ││git-conventions               ││증거를 만드는 것과 그 증거가 주장을 증명하는 것은 다른    │
-│PROJECT cli-maker         ││karpathy-guidelines           ││일이다. 검증하지 않은 산출물은 결론의 근거로도, 사용자에게│
-│  root md:3               ││obey-your-own-spec            ││건네는 재료로도 쓰지 않는다.                              │
-│  docs:80                 ││performance                   ││                                                          │
-│                          ││report-guideline              ││## 어디서 깨지나                                          │
-│                          ││rule-format                   ││                                                          │
-│                          ││session-snapshot-rule         ││양상: 애초에 안 돈다                                      │
-│                          ││spec-before-first-build       ││점검: 건네기 직전 그 자리에서 빌드/실행                   │
-│                          ││verify-your-evidence          ││실측: M4: net/http 만 import 한 빈 몸통 → 사용자 빌드가   │
-│                          ││                              ││  imported and not used 로 막힘                           │
+│GLOBAL                    ││  dream                       ││# 전역 rule 파일 포맷                                     │
+│  skills:6                ││  get-api-docs                ││                                                          │
+│  rules:14                ││  grill-with-docs (link)      ││~/.claude/rules/*.md 에 발행하는 상시 가드레일의 형태.    │
+│  agents:1                ││▾ session-retro               ││                                                          │
+│  commands:1              ││  ▸ examples/                 ││핵심 제약: 이 파일들은 매 세션 컨텍스트에 실린다. 길이가  │
+│  agents/skills:1         ││    RETRO-FORMAT              ││곧 상시 비용이고, 틀린 rule 은 상시 오염이다. 그래서 짧고,│
+│PROJECT cli-maker         ││    RULE-FORMAT               ││강하고, 반증 가능해야 한다.                               │
+│  root md:3               ││▸ synced                      ││                                                          │
+│  docs:80                 ││  to-html                     ││## 골격                                                   │
+│                          ││                              ││                                                          │
+│                          ││                              ││# {제목 — 가드레일을 한 줄로 요약. 대시로 부제를 붙여도   │
+│                          ││                              ││된다}                                                     │
+│                          ││                              ││                                                          │
+│                          ││                              ││## 가드레일                                               │
+│                          ││                              ││                                                          │
 └──────────────────────────┘└──────────────────────────────┘└──────────────────────────────────────────────────────────┘
- j/k ↓/↑ move   tab pane   click select   drag copy   q quit
+ j/k ↓/↑ move   l/h open/close   tab pane   click select   drag copy   q quit
 ```
 
-The table at the foot of that preview has three columns and does not fit a preview 58 wide, so each row becomes a block with every cell behind its column's heading; a table that fits is drawn as a grid. In a terminal, headings are bold and cyan, the table's headings cyan, and code yellow.
+Every row starts closed. `session-retro`'s own row shows its `SKILL.md`; the rows under it are what it carries besides. `grill-with-docs` is a link to a skill kept elsewhere, and says so, since what is behind a link is never walked into ([ADR-0007](docs/adr/0007-links-are-listed-not-followed.md)). The count beside a source stays the number of entries, however many rows are open — `docs:80` opens as two rows, `adr/` and `learn/`. In a terminal, headings are bold and cyan, and code yellow; a table that does not fit the preview becomes one block per row.
 
 With words, or with its output going to a pipe or a file, it prints the **listing** instead — which is also what an AI agent running it from its own shell gets ([ADR-0008](docs/adr/0008-screen-for-a-bare-command-at-a-terminal.md)). The listing is where M1–M4 happened: the binary discovers its sources, walks each one by its own rule, reads a name and description out of each entry's frontmatter, **says what it could not read instead of reporting zero**, and **searches**.
 
@@ -76,17 +76,20 @@ When something on disk is broken — and for a program that reads other people's
   agents:(permission denied)     # the directory exists and holds a file; it will not open
   commands:0                     # genuinely empty
   agents/skills:(missing)        # no such path
-  docs:3 (1 unreadable)          # three found, one subdirectory refused
+  docs:3 (1 unreadable)          # three found, one subdirectory refused —
+    C:\...\docs\guide\secret (permission denied)            # — and which one
 ```
 
-Through M2 the first of those lines read `0`, indistinguishable from the second, because a failure that could not be expressed in the return type had already been discarded before anything could print it ([ADR-0006](docs/adr/0006-unreadable-is-counted-not-dropped.md)). A directory link is now listed but never walked into — which is what stops a junction pointing at its own parent from turning a two-file directory into 128 rows ([ADR-0007](docs/adr/0007-links-are-listed-not-followed.md)).
+Through M2 the first of those lines read `0`, indistinguishable from the second, because a failure that could not be expressed in the return type had already been discarded before anything could print it ([ADR-0006](docs/adr/0006-unreadable-is-counted-not-dropped.md)). Since M7 whatever could not be read is also a row of its own where it was found — in the listing by its full path, on the screen in the tree — and a file that will not open is one of them, rather than an entry with no description ([ADR-0009](docs/adr/0009-unreadable-is-a-row-where-it-was-found.md)). A directory link is now listed but never walked into — which is what stops a junction pointing at its own parent from turning a two-file directory into 128 rows ([ADR-0007](docs/adr/0007-links-are-listed-not-followed.md)).
 
-Give it words and it keeps only the entries that contain every one of them — in the name or anywhere in the file, ignoring case — counts what it kept out of the whole, and prints under each row the first line that holds a word, so you can see why it is there:
+Give it words and it keeps only the entries that contain every one of them — in the name, anywhere in the file, or anywhere in a skill's supporting files, ignoring case — counts what it kept out of the whole, and prints under each row the first line that holds a word, so you can see why it is there. A line from a supporting file is marked with that file's name, as in `RULE-FORMAT:88:`.
 
 ```
-$ agentdocs adr 검증                           # abridged: 21 rows
+$ agentdocs adr 검증                           # abridged: 22 rows
 GLOBAL
-  skills:0/6
+  skills:1/6
+    session-retro                    세션 회고 — rule 판정을 원장에 쌓고, 사용자…
+      74: | 비가역·의외·trade-off 결정 | **ADR** (repo) | `~/.agents/s…
   rules:5/14
     adr-context-format               -
       1: # ADR & CONTEXT Format Authority
@@ -120,6 +123,8 @@ $ cd ~/projects/cli-maker && agentdocs
  / search   tab pane   e $EDITOR   q quit
 ```
 
+The tree in that sketch is M7's, and the screen at the top of this page is how it came out — a skill's `SKILL.md` is shown on the skill's own row rather than as one of the rows under it. Searching from the screen and handing a file to `$EDITOR` are still ahead.
+
 ## Learning roadmap
 
 One milestone = one Rust concept + one slice of functionality. Every milestone ends with **something you can run and see**.
@@ -133,7 +138,7 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 | **M4** ✅ | Search and filtering (still CLI) | **iterators & closures**, traits |
 | **M5** ✅ | TUI skeleton — three panes, key and mouse navigation, drag to copy | external crates, **the event loop**, modules, `Drop` |
 | **M6** ✅ | Markdown rendering — headings, lists, quotes, code blocks, tables, frontmatter, wrapped by the renderer | **lifetimes**, slices, `Cow` |
-| **M7** | Bundle tree (expand / collapse) | recursive data structures, `Box` |
+| **M7** ✅ | The tree — skills open onto their supporting files and `docs/` onto its directories; search reads supporting files; what cannot be read is a row | **recursive data structures**, `Box` and `Vec` |
 | **M8** | Code block highlighting + scrolling — the wheel scrolls the preview, a drag can select past the rows in view | `syntect`, state management |
 | **M9** | `$EDITOR` delegation + file watching | `std::process`, **threads & channels** |
 | **M10** | Config file (extra sources, ordering) | `serde`, TOML, `thiserror` |

@@ -49,10 +49,13 @@ Every function in this codebase that returns a borrow, against the rules:
 
 | function | lifetimes among the inputs | rule | the output points into |
 |---|---|---|---|
-| `Entry::doc(&self) -> Option<&Path>` | `self` | 2 | the Entry |
-| `App::walked(&self)`, `App::entry(&self)` | `self` | 2 | the App |
-| `names(walked: &Walked) -> Vec<&str>` | `walked` | 2 | the Walked |
-| `Entry::first_hit(&self, terms: &[String]) -> Option<(usize, &str)>` | `self`, `terms` | **3** | the Entry |
+| `Entry::doc(&self) -> Option<&Path>`, `Entry::supporting(&self) -> Vec<&Entry>` | `self` | 2 | the Entry |
+| `Node::path(&self) -> &Path`, `Node::children(&self) -> Option<&[Node]>` | `self` | 2 | the Node |
+| `Walked::entries(&self) -> Vec<&Entry>`, `Walked::unreadable(&self) -> Vec<(&Path, io::ErrorKind)>` | `self` | 2 | the Walked |
+| `App::walked(&self)`, `App::entry(&self)`, `App::rows(&self) -> Vec<Row<'_>>`, `App::row(&self)` | `self` | 2 | the App |
+| `names(walked: &Walked) -> Vec<&str>`, and in tests `inside(entry: &Entry)` and `hit(found: Option<Hit<'_>>)` | one | 2 | what was passed in |
+| `Entry::first_hit(&self, terms: &[String]) -> Option<Hit<'_>>`, `Entry::own_hit(&self, terms: &[String]) -> Option<(usize, &str)>` | `self`, `terms` | **3** | the Entry |
+| `gather<'a>`, `unread<'a>`, `visible<'a>` — they return nothing, and push borrows into an `out` argument | `'a`, declared on the function | none applies | named: the tree |
 | `markdown::render(text: &str, width: u16) -> Vec<Line<'_>>` | `text` | 2 | the file |
 | `listing::shown(text: &str) -> impl Iterator<Item = (&str, usize)>` | `text` | 2 | the file |
 | `markdown::words(span: Span<'_>) -> Vec<Span<'_>>` | the one inside `Span` | 2 | the file |
@@ -79,6 +82,29 @@ error: lifetime may not live long enough
 
 Rule 3 tied the output to `self`, and the body, which returned something of `terms`, was held to that.
 
+## A borrow handed out through an argument
+
+`gather` returns nothing. It pushes each Entry it finds into a list it was lent, and the borrows in that list point into the tree:
+
+```rust
+pub fn gather<'a>(nodes: &'a [Node], out: &mut Vec<&'a Entry>)
+```
+
+The rules only ever fill in *outputs*, and `out` is an input. Left out, rule 1 gives `nodes` and the Entries in `out` a lifetime each, and nothing says the second may point into the first:
+
+```
+error: lifetime may not live long enough
+7 | fn gather(nodes: &[Node], out: &mut Vec<&Entry>) {
+  |                  -                      - let's call the lifetime of this reference `'2`
+  |                  let's call the lifetime of this reference `'1`
+10|             Node::Entry(entry) => out.push(entry),
+  |                                   ^^^^^^^^^^^^^^^ argument requires that `'1` must outlive `'2`
+help: consider introducing a named lifetime parameter
+7 | fn gather<'a>(nodes: &'a [Node], out: &mut Vec<&'a Entry>) {
+```
+
+One name on both says the Entries in `out` come from `nodes`. `unread` and `visible` are written the same way.
+
 ## A type that holds a borrow says so
 
 ```rust
@@ -104,6 +130,8 @@ help: use `'_` for type paths
 
 `'_` reads: fill this in by the rules, but show that a borrow is here.
 
+M7 added two more such types, both small. A `Hit<'a>` is the line that made a search keep an Entry: the line is a slice of a file's text, and `within: Option<&'a Entry>` says which supporting file it came from. A `Row<'a>` is one row of the Entries pane: a depth and a `&'a Node`. The screen's rows copy nothing out of the tree — they point into it, are made for one frame, and are gone before the tree could change.
+
 ## `'static`, and which way a promise goes
 
 `'static` promises that a thing lasts until the program ends. Only what is compiled into the binary — a string literal — can keep that. A file's text is read at run time into an Entry's `String` and goes when the Entry goes. With `Renderer`'s `text` given `&'static str`:
@@ -128,7 +156,8 @@ The other direction is free. The bar in front of a quote, `"│ "`, goes into a 
 - **Declared but not used.** Before the quizzes, `struct Renderer<'a>` got its name while the field stayed `Vec<Span>`: E0106 on the field, and the help said what to write, `Vec<Span<'a>>`.
 - **`links` borrows too.** Only `text` was picked as borrowing from the file. The address in `[ADR-0001](docs/adr/0001.md)` is text in the file, lent as `CowStr<'a>`.
 - **Which way a literal fits.** Putting `"│ "` among the file's pieces was predicted to make the compiler copy it — it does not. In the review, `Vec<Span<'static>>` holding the bar *and* a piece of the file was picked as compiling alongside `Vec<Span<'a>>`; only the second does.
+- **A visible `&` taken as a safe return (not settled).** In M7 the same wrong answer came four times in a row, among them: returning a slice kept in a local `Vec` picked as refused, and `&joined` — a `String` that `replace` made inside the function — picked as compiling. It is the other way round. What decides is where the arrow lands: `E0515: cannot return reference to local variable` when it points at something the function made and is about to drop, and no error when it points into what the caller lent — a `Vec` of slices is dropped as a box of arrows, and the text they point at lives on. A diagnostic question showed the criterion itself was missing, and a timeline of what `return` does, step by step, came after the fourth answer. The next question, `Node::path`, was answered right, but its wording said *arrow*; still open at the end of M7.
 
 ## Related
 
-[[borrowing]] · [[slices]] · [[owned-vs-borrowed-pairs]] · [[structs]] · [[drop-and-unwinding]]
+[[borrowing]] · [[slices]] · [[owned-vs-borrowed-pairs]] · [[structs]] · [[drop-and-unwinding]] · [[recursive-data]]

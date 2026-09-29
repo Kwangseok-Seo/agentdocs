@@ -41,7 +41,7 @@ Walked::default()         = Walked { entries: [], unreadable: 0 }
 WalkedByHand::default()   = WalkedByHand { entries: [], unreadable: 0 }
 ```
 
-M4 replaced the hand-written `Walked::new()` and `Frontmatter::none()` this way — both were already, field for field, what the derive produces. `#[derive(Debug)]`, added in M3 because `unwrap_err()` required it, is the same mechanism for a different trait.
+M4 replaced the hand-written `Walked::new()` and `Frontmatter::none()` this way — both were already, field for field, what the derive produces. (Since M7 `Walked` has one field, `nodes`, and its count of what could not be read is worked out from them; the derive writes the same block, a field shorter.) `#[derive(Debug)]`, added in M3 because `unwrap_err()` required it, is the same mechanism for a different trait.
 
 Because a derive works field by field, one field without the trait stops it:
 

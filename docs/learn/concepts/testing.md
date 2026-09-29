@@ -50,7 +50,7 @@ let made = std::os::unix::fs::symlink(target, link);
 
 Windows grants that privilege to administrators and to accounts with Developer Mode enabled, so it can fail where the rest of the suite runs fine. A test that cannot build its fixture must not report success quietly: this one prints `SKIPPED` with the error kind to stderr and returns, and `cargo test -- --nocapture | grep -c SKIPPED` says whether that ever happened.
 
-What `std` still cannot build is **a directory that refuses to be read** — removing your own read permission takes `icacls` on Windows and `chmod` on Unix — so the paths that increment `unreadable` have no automated test and are covered only by a fixture built by hand.
+**A file or directory that refuses to be read** could not be built this way until M7. Removing your own read permission takes `icacls` on Windows and `chmod` on Unix, so from M3 the paths that report something unreadable had no automated test. On Windows there is another way: a handle can refuse to share. `testutil::hold` opens the path with `share_mode(0)` — and, for a directory, the flag without which one cannot be opened at all — and until that handle is dropped, anything else that opens the path gets *sharing violation*, os error 32, which the listing shows as `unreadable`. Since M7 those paths have tests on Windows; on other systems the same tests print `SKIPPED`.
 
 ## A green suite is not evidence
 

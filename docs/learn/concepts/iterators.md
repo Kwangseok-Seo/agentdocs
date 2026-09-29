@@ -88,7 +88,9 @@ And on nothing at all:
 all on [] = true (closure called 0 times), any on [] = false
 ```
 
-`all` is really asking *"is there anything that fails?"* — with nothing to check, nothing fails. That one fact removed two branches from the search: with no terms, `matches` keeps every Entry and `any` in `first_hit` finds no line, so neither needs an `if` for a run without arguments to list what M3 listed.
+`all` is really asking *"is there anything that fails?"* — with nothing to check, nothing fails. That one fact removed two branches from the search: with no terms, `matches` keeps every Entry and `any` in `own_hit` finds no line, so neither needs an `if` for a run without arguments to list what M3 listed.
+
+The same fact cuts the other way. Since M7 a Bundle matches when each term is in its Lead or in *any* of its supporting files — `terms.iter().all(|t| self.holds(t) || supporting.iter().any(|e| e.holds(t)))`. With `all` written where that `any` is, every rule matched whatever was searched for — measured, `rules:14/14` — because a rule has no supporting files, and `all` of none is true.
 
 ## `collect` is told what to build
 
@@ -128,8 +130,9 @@ The inner `.map` is not the iterator's — it is `Option::map`, which changes th
 | Chain | Where |
 |---|---|
 | `skip` → `filter` → `map` → `collect` | `search_terms` |
-| `all` | `Entry::matches` |
-| `enumerate` → `find`, then `Option::map` | `Entry::first_hit` |
+| `all`, with `any` inside it | `Entry::matches` |
+| `enumerate` → `find`, then `Option::map` | `Entry::own_hit` |
+| `into_iter` → `find_map` over a Bundle's supporting files | `Entry::first_hit` |
 | `filter` → `collect` | `listing` |
 | `filter_map` → `min`, then `chars` → `skip` → `collect` | `around` |
 | `map` → `sum` over one character's lowercase form | `chars_before` |

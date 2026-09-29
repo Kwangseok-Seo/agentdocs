@@ -37,7 +37,7 @@ Goal 2 is the constraint that does not show up in the code. The workflow below e
 ## Layout (grow it as needed — never pre-create empty directories)
 
 - `src/main.rs` — the command line, the source table, and the choice between screen and listing.
-- `src/source.rs` · `src/entry.rs` · `src/frontmatter.rs` — where to look, what one Entry is, how fields are read.
+- `src/source.rs` · `src/entry.rs` · `src/frontmatter.rs` — where to look, what one Entry is and the tree a Walk builds of them, how fields are read.
 - `src/listing.rs` — the lines of the listing, and `printable`, which every name and description passes on its way to a terminal. `src/tui.rs` — the screen. `src/markdown.rs` — a file drawn as Markdown for the preview. `src/testutil.rs` — fixtures shared by the tests.
 - `docs/adr/` — architecture decision records.
 - `docs/learn/` — the Rust learning wiki (`index.md` + `concepts/` + `milestones/`).

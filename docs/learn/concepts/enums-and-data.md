@@ -25,7 +25,7 @@ match scope {
 }                                   // no catch-all arm needed
 ```
 
-The compiler knows the list is closed, so covering it is enough. Add a third variant later and **every** `match` that does not handle it becomes a compile error naming the variant — the compiler produces the list of places to edit.
+The compiler knows the list is closed, so covering it is enough. Add a third variant later and **every** `match` that does not handle it becomes a compile error naming the variant — the compiler produces the list of places to edit. M7 did exactly that: `Node` gained `Unreadable`, and the build named the three `match`es to extend. It did not name the `if let` beside them ([[option-and-match]]).
 
 Compare with the same thing done on strings:
 
@@ -64,7 +64,7 @@ Both compile. With the enum the first **cannot be written at all**, and the seco
 
 ## And it is smaller, not larger
 
-Measured on 64-bit Windows:
+Measured on 64-bit Windows, on the shapes above as M2 wrote them (since M7 a Bundle also carries `inside`, the tree below its Lead — [[recursive-data]]):
 
 ```
 Walk             1 byte    three variants, no data: a tag byte is enough
@@ -112,4 +112,4 @@ Types and variants are `UpperCamelCase`; fields, functions and variables are `sn
 
 ## Related
 
-[[structs]] · [[option-and-match]] · [[impl-and-methods]] · [[str-scanning]] · [[event-loop]]
+[[structs]] · [[option-and-match]] · [[impl-and-methods]] · [[str-scanning]] · [[event-loop]] · [[recursive-data]]
