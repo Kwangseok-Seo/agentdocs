@@ -1,4 +1,5 @@
 use std::io;
+use std::path::Path;
 
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -119,10 +120,18 @@ pub fn heading(name: &str, walked: &Walked, terms: &[String]) -> String {
         let kept = entries.iter().filter(|e| e.matches(terms)).count();
         format!("  {name}:{kept}/{total}")
     };
-    if walked.unreadable > 0 {
-        heading.push_str(&format!(" ({} unreadable)", walked.unreadable));
+    let unreadable = walked.unreadable().len();
+    if unreadable > 0 {
+        heading.push_str(&format!(" ({unreadable} unreadable)"));
     }
     heading
+}
+
+/// The line for something a Walk could not read: where it is, in full — the
+/// listing has no tree to show where a name sits — and why. A path is made
+/// of somebody else's names, so it passes through `printable` too.
+fn unread_row(path: &Path, why: io::ErrorKind) -> String {
+    format!("    {} ({})", printable(&path.to_string_lossy()), reason(why))
 }
 
 /// A Source that could not be walked at all: its name and why.
@@ -146,18 +155,30 @@ fn row(entry: &Entry) -> String {
 
 /// The lines one walked Source puts on screen: a heading with its count, then a
 /// row for each Entry the search kept, each followed by the line that made it
-/// match. Without search terms this is exactly the listing printed before M4 —
-/// every Entry, the plain count, no matched lines. A function for the same
-/// reason as `row`: a test can read what the terminal would have been given.
+/// match, and last a row for each thing that could not be read — searched or
+/// not, since what could not be read could not be ruled out either. Without
+/// search terms and with nothing unreadable, this is exactly the listing
+/// printed before M4. A function for the same reason as `row`: a test can read
+/// what the terminal would have been given.
 pub fn listing(name: &str, walked: &Walked, terms: &[String]) -> Vec<String> {
     let mut lines = vec![heading(name, walked, terms)];
     for entry in walked.entries().into_iter().filter(|e| e.matches(terms)) {
         lines.push(row(entry));
         // Out of somebody else's file, so through `around` and with it
-        // `printable`, like every other field on screen.
-        if let Some((n, line)) = entry.first_hit(terms) {
-            lines.push(format!("      {n}: {}", around(line.trim(), terms, 60)));
+        // `printable`, like every other field on screen. A line from one of a
+        // Bundle's supporting files is marked with the name its row has on
+        // screen: its path can run to a hundred characters, and a Bundle can
+        // hold eight files called `SKILL.md`.
+        if let Some(hit) = entry.first_hit(terms) {
+            let at = match hit.within {
+                None => hit.number.to_string(),
+                Some(file) => format!("{}:{}", printable(&file.name), hit.number),
+            };
+            lines.push(format!("      {at}: {}", around(hit.line.trim(), terms, 60)));
         }
+    }
+    for (path, why) in walked.unreadable() {
+        lines.push(unread_row(path, why));
     }
     lines
 }
@@ -396,20 +417,26 @@ mod tests {
     // ----------------------------------------------------------------- listing
 
     /// Two Entries: `alpha` mentions ADR in its first line, `beta` does not.
-    fn two_entries(unreadable: usize) -> Walked {
+    /// With `locked`, a file between them that could not be read.
+    fn two_entries(locked: bool) -> Walked {
         let mut alpha = entry_with("alpha", Some("ADR notes\nmore"));
         alpha.description = Some("first".to_string());
         let beta = entry_with("beta", Some("nothing here"));
-        Walked { nodes: vec![Node::Entry(alpha), Node::Entry(beta)], unreadable }
+        let mut nodes = vec![Node::Entry(alpha), Node::Entry(beta)];
+        if locked {
+            let path = PathBuf::from("rules").join("locked.md");
+            nodes.insert(1, Node::Unreadable { path, reason: io::ErrorKind::PermissionDenied });
+        }
+        Walked { nodes }
     }
 
     #[test]
     fn without_terms_the_listing_is_the_one_printed_before_m4() {
-        let walked = two_entries(1);
+        let walked = two_entries(false);
         assert_eq!(
             listing("rules", &walked, &words(&[])),
             vec![
-                "  rules:2 (1 unreadable)".to_string(),
+                "  rules:2".to_string(),
                 format!("    {:<32} first", "alpha"),
                 format!("    {:<32} -", "beta"),
             ]
@@ -417,8 +444,30 @@ mod tests {
     }
 
     #[test]
+    fn what_could_not_be_read_is_counted_and_then_named_where_it_is() {
+        let walked = two_entries(true);
+        let locked = PathBuf::from("rules").join("locked.md");
+        assert_eq!(
+            listing("rules", &walked, &words(&[])),
+            vec![
+                "  rules:2 (1 unreadable)".to_string(),
+                format!("    {:<32} first", "alpha"),
+                format!("    {:<32} -", "beta"),
+                format!("    {} (permission denied)", locked.display()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_path_that_could_not_be_read_never_carries_a_control_character() {
+        let path = PathBuf::from("\u{1b}[31mlocked.md");
+        let walked = Walked { nodes: vec![Node::Unreadable { path, reason: io::ErrorKind::Other }] };
+        assert_eq!(listing("rules", &walked, &words(&[]))[1], "    [31mlocked.md (unreadable)");
+    }
+
+    #[test]
     fn a_search_shows_what_it_kept_out_of_the_whole_and_why() {
-        let walked = two_entries(0);
+        let walked = two_entries(false);
         assert_eq!(
             listing("rules", &walked, &words(&["adr"])),
             vec![
@@ -431,16 +480,50 @@ mod tests {
 
     #[test]
     fn a_search_that_keeps_nothing_still_shows_the_source() {
-        let walked = two_entries(1);
-        assert_eq!(listing("rules", &walked, &words(&["zzz"])), vec!["  rules:0/2 (1 unreadable)"]);
+        let walked = two_entries(false);
+        assert_eq!(listing("rules", &walked, &words(&["zzz"])), vec!["  rules:0/2"]);
+    }
+
+    #[test]
+    fn a_search_still_names_what_could_not_be_read() {
+        // What could not be read could not be ruled out either.
+        let walked = two_entries(true);
+        let locked = PathBuf::from("rules").join("locked.md");
+        assert_eq!(
+            listing("rules", &walked, &words(&["zzz"])),
+            vec!["  rules:0/2 (1 unreadable)".to_string(), format!("    {} (permission denied)", locked.display())]
+        );
     }
 
     #[test]
     fn the_matched_line_is_brought_into_view() {
         let long = format!("{} adr tail", "x".repeat(100));
-        let walked = Walked { nodes: vec![Node::Entry(entry_with("gamma", Some(&long)))], unreadable: 0 };
+        let walked = Walked { nodes: vec![Node::Entry(entry_with("gamma", Some(&long)))] };
         let lines = listing("docs", &walked, &words(&["adr"]));
         assert_eq!(lines[2], "      1: …xxxxxxxxx adr tail");
+    }
+
+    #[test]
+    fn a_line_from_a_supporting_file_is_marked_with_its_name() {
+        let reference = entry_with("REFERENCE", Some("intro\nsee ADR here"));
+        let alpha = bundle_with("alpha", Some("lead"), Some(vec![Node::Entry(reference)]));
+        let walked = Walked { nodes: vec![Node::Entry(alpha)] };
+        assert_eq!(
+            listing("skills", &walked, &words(&["adr"])),
+            vec![
+                "  skills:1/1".to_string(),
+                format!("    {:<32} -", "alpha"),
+                "      REFERENCE:2: see ADR here".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_name_marking_a_line_never_carries_a_control_character() {
+        let reference = entry_with("\u{1b}[31mREF", Some("adr"));
+        let alpha = bundle_with("alpha", Some("lead"), Some(vec![Node::Entry(reference)]));
+        let walked = Walked { nodes: vec![Node::Entry(alpha)] };
+        assert_eq!(listing("skills", &walked, &words(&["adr"]))[2], "      [31mREF:1: adr");
     }
 
     #[test]
@@ -463,7 +546,6 @@ mod tests {
                 },
                 Node::Entry(entry_with("SPEC", None)),
             ],
-            unreadable: 0,
         };
         assert_eq!(
             listing("docs", &walked, &words(&[])),

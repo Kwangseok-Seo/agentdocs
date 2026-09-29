@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::entry::{Entry, EntryKind, Node};
+use crate::entry::{Entry, EntryKind, Node, gather, unread};
 
 pub enum Scope {
     Global,
@@ -20,14 +20,12 @@ fn md_files(dir: &Path) -> io::Result<Walked> {
     let read = fs::read_dir(dir)?;
 
     for item in read {
-        let Ok(item) = item else { out.unreadable += 1; continue };
-        let Ok(ft) = item.file_type() else { out.unreadable += 1; continue };
-        let path = item.path();
+        let Some((path, ft)) = described(dir, item, &mut out) else { continue };
         // A real directory is not a document, whatever it is named. A link is
         // left to `md_entry`, which decides by name: going to see what it points
         // at is walking into it, and a link is never walked into.
         if ft.is_dir() { continue };
-        if let Some(entry) = document(path) { out.nodes.push(Node::Entry(entry)); }
+        if let Some(node) = document(path) { out.nodes.push(node); }
     }
     Ok(out)
 }
@@ -37,22 +35,20 @@ fn md_tree(dir: &Path) -> io::Result<Walked> {
     let read = fs::read_dir(dir)?;
 
     for item in read {
-        let Ok(item) = item else { out.unreadable += 1; continue };
-        let Ok(ft) = item.file_type() else { out.unreadable += 1; continue };
-        let path = item.path();
+        let Some((path, ft)) = described(dir, item, &mut out) else { continue };
         if ft.is_dir() {
             // A directory named with a leading dot is hidden by convention, and
             // what a tool leaves in one — `.pytest_cache/README.md` — is not
-            // documentation. Passed over like a `.txt`, so not counted either.
-            if item.file_name().to_string_lossy().starts_with('.') { continue };
+            // documentation. Passed over like a `.txt`, so not shown either.
+            if path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')) { continue };
             match md_tree(&path) {
                 Ok(sub) => out.nest(path, sub),
-                Err(_) => out.unreadable += 1,
+                Err(e) => out.nodes.push(unreadable(path, &e)),
             }
-        } else if let Some(entry) = document(path) {
+        } else if let Some(node) = document(path) {
             // Not a directory, so a candidate document — a link included, since
             // it is listed by name rather than followed.
-            out.nodes.push(Node::Entry(entry));
+            out.nodes.push(node);
         }
     }
     Ok(out)
@@ -63,9 +59,7 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
     let read = fs::read_dir(dir)?;
 
     for item in read {
-        let Ok(item) = item else { out.unreadable += 1; continue };
-        let Ok(ft) = item.file_type() else { out.unreadable += 1; continue };
-        let path = item.path();
+        let Some((path, ft)) = described(dir, item, &mut out) else { continue };
         // A Bundle is a directory, and a link standing in for one is listed
         // without being walked into. A link to a *file* is not a Bundle, and
         // asking where a link points is reading rather than walking — but a link
@@ -80,18 +74,13 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
         let lead = if lead_path.is_file() { Some(lead_path) } else { None };
 
         // Only a directory is walked into. What a link stands in for is not
-        // asked at all — the entry itself says which it is (ADR-0007).
+        // asked at all — the entry itself says which it is (ADR-0007). A
+        // directory that will not open holds one row saying so.
         let inside = if ft.is_dir() {
-            match supporting(&path, lead.as_deref()) {
-                Ok(sub) => {
-                    out.unreadable += sub.unreadable;
-                    Some(sub.nodes)
-                }
-                Err(_) => {
-                    out.unreadable += 1;
-                    Some(Vec::new())
-                }
-            }
+            Some(match supporting(&path, lead.as_deref()) {
+                Ok(sub) => sub.nodes,
+                Err(e) => vec![unreadable(path.clone(), &e)],
+            })
         } else {
             None
         };
@@ -103,8 +92,12 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
             description: None,
             text: None,
         };
-        entry.load_frontmatter();
-        out.nodes.push(Node::Entry(entry));
+        // The Lead is what names and shows a Bundle. A Bundle whose Lead will
+        // not open has nothing to show, and is shown as unreadable.
+        match entry.load_frontmatter() {
+            Ok(()) => out.nodes.push(Node::Entry(entry)),
+            Err(e) => out.nodes.push(unreadable(entry.path, &e)),
+        }
     }
     Ok(out)
 }
@@ -117,9 +110,35 @@ fn supporting(dir: &Path, lead: Option<&Path>) -> io::Result<Walked> {
     let mut walked = md_tree(dir)?;
     walked.nodes.retain(|node| match node {
         Node::Entry(entry) => Some(entry.path.as_path()) != lead,
-        Node::Dir { .. } => true,
+        Node::Dir { .. } | Node::Unreadable { .. } => true,
     });
     Ok(walked)
+}
+
+/// One item of a directory being read, as its path and what kind of thing it
+/// is — or, when the system will not say, a row in `out` for it and `None`.
+/// An item that will not describe itself has no name of its own, so its row
+/// is named by the directory it was found in.
+fn described(dir: &Path, item: io::Result<fs::DirEntry>, out: &mut Walked) -> Option<(PathBuf, fs::FileType)> {
+    let item = match item {
+        Ok(item) => item,
+        Err(e) => {
+            out.nodes.push(unreadable(dir.to_path_buf(), &e));
+            return None;
+        }
+    };
+    match item.file_type() {
+        Ok(ft) => Some((item.path(), ft)),
+        Err(e) => {
+            out.nodes.push(unreadable(item.path(), &e));
+            None
+        }
+    }
+}
+
+/// The row for something at `path` that could not be looked at, and why.
+fn unreadable(path: PathBuf, e: &io::Error) -> Node {
+    Node::Unreadable { path, reason: e.kind() }
 }
 
 pub struct Source {
@@ -163,21 +182,20 @@ pub fn find_project_root(start: &Path, home: &Path) -> Option<PathBuf> {
     Some(start.to_path_buf())                    // nothing found: the current directory is the root
 }
 
-/// What one Walk found: the Entries it could list, in the shape of the
-/// directories it found them in, and how many things it could not read. A
-/// count that hides its own blind spots is a wrong count.
+/// What one Walk found: the Entries it could list and the things it could not
+/// read, in the shape of the directories it found them in. A count that hides
+/// its own blind spots is a wrong count, and one that names none of them
+/// leaves the reader to find them.
 #[derive(Debug, Default)]
 pub struct Walked {
     pub nodes: Vec<Node>,
-    pub unreadable: usize,
 }
 
 impl Walked {
     /// Keep a subdirectory's findings as one row that holds them. A directory
-    /// with no Entry anywhere below it is not a row, but what could not be
-    /// read down there still counts.
+    /// with nothing below it — no Entry, and nothing that could not be read —
+    /// is not a row.
     fn nest(&mut self, path: PathBuf, sub: Walked) {
-        self.unreadable += sub.unreadable;
         if !sub.nodes.is_empty() {
             self.nodes.push(Node::Dir { path, children: sub.nodes });
         }
@@ -190,15 +208,13 @@ impl Walked {
         gather(&self.nodes, &mut out);
         out
     }
-}
 
-/// Add every Entry among `nodes` to `out`, going down into each directory.
-fn gather<'a>(nodes: &'a [Node], out: &mut Vec<&'a Entry>) {
-    for node in nodes {
-        match node {
-            Node::Entry(entry) => out.push(entry),
-            Node::Dir { children, .. } => gather(children, out),
-        }
+    /// Where each thing that could not be read is, and why, wherever in the
+    /// tree it was found — the order the Walk found them in.
+    pub fn unreadable(&self) -> Vec<(&Path, io::ErrorKind)> {
+        let mut out = Vec::new();
+        unread(&self.nodes, &mut out);
+        out
     }
 }
 
@@ -214,11 +230,14 @@ pub fn md_entry(path: PathBuf) -> Option<Entry> {
 }
 
 /// A `.md` file as a Walk lists it: an Entry, named and described by its
-/// frontmatter where it has one.
-fn document(path: PathBuf) -> Option<Entry> {
+/// frontmatter where it has one — or, when the file will not open, a row
+/// saying so. Anything else is not a document.
+fn document(path: PathBuf) -> Option<Node> {
     let mut entry = md_entry(path)?;
-    entry.load_frontmatter();
-    Some(entry)
+    Some(match entry.load_frontmatter() {
+        Ok(()) => Node::Entry(entry),
+        Err(e) => unreadable(entry.path, &e),
+    })
 }
 
 #[cfg(test)]
@@ -254,8 +273,8 @@ mod tests {
     // ------------------------------------------------------------------ Walked
 
     /// The tree as indented lines: a directory by its name and a slash, an
-    /// Entry by its name. Each level is sorted, since the order `read_dir`
-    /// gives is the platform's.
+    /// Entry by its name, and what could not be read by its name and why. Each
+    /// level is sorted, since the order `read_dir` gives is the platform's.
     fn outline(nodes: &[Node], depth: usize) -> Vec<String> {
         let mut level: Vec<(String, Vec<String>)> = nodes
             .iter()
@@ -264,6 +283,10 @@ mod tests {
                 Node::Dir { path, children } => (
                     format!("{}/", path.file_name().unwrap().to_string_lossy()),
                     outline(children, depth + 1),
+                ),
+                Node::Unreadable { path, reason: why } => (
+                    format!("{} ({})", path.file_name().unwrap().to_string_lossy(), reason(*why)),
+                    Vec::new(),
                 ),
             })
             .collect();
@@ -278,30 +301,59 @@ mod tests {
         Node::Entry(md_entry(PathBuf::from(format!("{name}.md"))).unwrap())
     }
 
-    #[test]
-    fn nesting_keeps_a_subdirectory_as_one_row_and_adds_its_blind_spots() {
-        let mut a = Walked::default();
-        a.nodes.push(found("one"));
-        a.unreadable = 1;
-
-        let mut b = Walked::default();
-        b.nodes.push(found("two"));
-        b.unreadable = 2;
-
-        a.nest(PathBuf::from("sub"), b);
-        assert_eq!(outline(&a.nodes, 0), vec!["one", "sub/", "  two"]);
-        assert_eq!(a.unreadable, 3);
+    fn refused(path: &str) -> Node {
+        Node::Unreadable { path: PathBuf::from(path), reason: io::ErrorKind::PermissionDenied }
     }
 
     #[test]
-    fn a_subdirectory_with_nothing_listed_is_no_row_but_its_blind_spots_count() {
+    fn nesting_keeps_a_subdirectory_as_one_row_with_its_blind_spots_inside() {
         let mut a = Walked::default();
         a.nodes.push(found("one"));
+        a.nodes.push(refused("locked.md"));
 
-        let b = Walked { nodes: Vec::new(), unreadable: 2 };
+        let mut b = Walked::default();
+        b.nodes.push(found("two"));
+        b.nodes.push(refused("sub/deep"));
+
         a.nest(PathBuf::from("sub"), b);
+        assert_eq!(
+            outline(&a.nodes, 0),
+            vec!["locked.md (permission denied)", "one", "sub/", "  deep (permission denied)", "  two"]
+        );
+        assert_eq!(a.unreadable().len(), 2);
+    }
+
+    #[test]
+    fn a_subdirectory_with_nothing_below_it_is_no_row() {
+        let mut a = Walked::default();
+        a.nodes.push(found("one"));
+        a.nest(PathBuf::from("sub"), Walked::default());
         assert_eq!(outline(&a.nodes, 0), vec!["one"]);
-        assert_eq!(a.unreadable, 2);
+    }
+
+    #[test]
+    fn a_subdirectory_holding_only_what_could_not_be_read_is_a_row() {
+        // It is where the blind spot is, and the screen shows it there.
+        let mut a = Walked::default();
+        let b = Walked { nodes: vec![refused("sub/secret")] };
+        a.nest(PathBuf::from("sub"), b);
+        assert_eq!(outline(&a.nodes, 0), vec!["sub/", "  secret (permission denied)"]);
+    }
+
+    #[test]
+    fn what_could_not_be_read_is_found_inside_directories_and_walked_bundles() {
+        let mut alpha = md_entry(PathBuf::from("alpha.md")).unwrap();
+        alpha.kind = EntryKind::Bundle { lead: None, inside: Some(vec![refused("alpha/forms.md")]) };
+        let walked = Walked {
+            nodes: vec![
+                refused("top.md"),
+                Node::Dir { path: PathBuf::from("sub"), children: vec![found("b"), refused("sub/deep")] },
+                Node::Entry(alpha),
+            ],
+        };
+        let where_: Vec<String> = walked.unreadable().iter().map(|(path, _)| path.display().to_string()).collect();
+        assert_eq!(where_, vec!["top.md", "sub/deep", "alpha/forms.md"]);
+        assert_eq!(names(&walked), vec!["b", "alpha"]);
     }
 
     #[test]
@@ -318,7 +370,6 @@ mod tests {
                 },
                 found("d"),
             ],
-            unreadable: 0,
         };
         assert_eq!(names(&walked), vec!["a", "b", "c", "d"]);
     }
@@ -339,7 +390,7 @@ mod tests {
         let dir = scratch("empty");
         let walked = md_files(&dir).unwrap();
         assert_eq!(walked.entries().len(), 0);
-        assert_eq!(walked.unreadable, 0);
+        assert_eq!(walked.unreadable().len(), 0);
     }
 
     #[test]
@@ -383,7 +434,7 @@ mod tests {
         let mut found = names(&walked);
         found.sort();
         assert_eq!(found, vec!["a", "b", "c"]);
-        assert_eq!(walked.unreadable, 0);
+        assert_eq!(walked.unreadable().len(), 0);
     }
 
     #[test]
@@ -411,7 +462,7 @@ mod tests {
 
         let walked = md_tree(&dir).unwrap();
         assert_eq!(outline(&walked.nodes, 0), vec!["a"]);
-        assert_eq!(walked.unreadable, 0);
+        assert_eq!(walked.unreadable().len(), 0);
     }
 
     #[test]
@@ -604,7 +655,7 @@ mod tests {
         let src = Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles);
         let walked = src.entries().unwrap();
         assert!(walked.entries()[0].matches(&words(&["검증"])));
-        assert_eq!(walked.entries()[0].first_hit(&words(&["검증"])), Some((3, "body says 검증")));
+        assert_eq!(hit(walked.entries()[0].first_hit(&words(&["검증"]))), Some(("", 3, "body says 검증")));
     }
 
     #[test]
@@ -635,7 +686,97 @@ mod tests {
         let entry = &walked.entries()[0];
         assert_eq!(entry.description.as_deref(), Some("still read"));
         assert!(entry.matches(&words(&["adr"])));
-        assert_eq!(entry.first_hit(&words(&["adr"])), Some((5, "mentions adr \u{fffd} here")));
+        assert_eq!(hit(entry.first_hit(&words(&["adr"]))), Some(("", 5, "mentions adr \u{fffd} here")));
+    }
+
+    #[test]
+    fn a_word_in_a_supporting_file_is_found_after_a_walk() {
+        let dir = scratch("search-supporting");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\nlead\n");
+        write(&dir.join("alpha").join("examples").join("one.md"), "intro\nmentions adr\n");
+
+        let src = Source::new("skills", dir, Scope::Global, Walk::BundleDirs);
+        let walked = src.entries().unwrap();
+        let entry = walked.entries()[0];
+        assert!(entry.matches(&words(&["adr"])));
+        assert_eq!(hit(entry.first_hit(&words(&["adr"]))), Some(("one", 2, "mentions adr")));
+    }
+
+    // ------------------------------------------------------ what cannot be read
+    //
+    // Each of these holds a file or a directory open so that the Walk cannot
+    // open it, and gives up — saying so on stderr — where that is impossible.
+
+    #[test]
+    fn a_document_that_will_not_open_is_a_row_saying_so() {
+        // Before M7 it was an Entry with no text: its row read `-`, as if it
+        // had no description, and a search passed it over without a word.
+        let dir = scratch("unread-file");
+        write(&dir.join("kept.md"), "# kept");
+        write(&dir.join("locked.md"), "# locked");
+        let Some(_held) = hold(&dir.join("locked.md")) else { return };
+
+        let walked = md_files(&dir).unwrap();
+        assert_eq!(names(&walked), vec!["kept"]);
+        let unread = walked.unreadable();
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].0, dir.join("locked.md"));
+        assert_eq!(reason(unread[0].1), "unreadable");
+    }
+
+    #[test]
+    fn a_subdirectory_that_will_not_open_is_a_row_where_it_was_found() {
+        // Until M7 no test reached this: the count it added to was checked by
+        // a fixture script outside the repository.
+        let dir = scratch("unread-subdir");
+        write(&dir.join("a.md"), "# a");
+        write(&dir.join("sub").join("b.md"), "# b");
+        write(&dir.join("sub").join("secret").join("c.md"), "# c");
+        let Some(_held) = hold(&dir.join("sub").join("secret")) else { return };
+
+        let walked = md_tree(&dir).unwrap();
+        assert_eq!(outline(&walked.nodes, 0), vec!["a", "sub/", "  b", "  secret (unreadable)"]);
+        assert_eq!(walked.unreadable().len(), 1);
+    }
+
+    #[test]
+    fn a_bundle_whose_lead_will_not_open_is_a_row_saying_so() {
+        let dir = scratch("unread-lead");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&dir.join("alpha").join("REFERENCE.md"), "# supporting");
+        let Some(_held) = hold(&dir.join("alpha").join("SKILL.md")) else { return };
+
+        // The Lead is what names and shows a Bundle.
+        let walked = bundle_dirs(&dir).unwrap();
+        assert_eq!(outline(&walked.nodes, 0), vec!["alpha (unreadable)"]);
+    }
+
+    #[test]
+    fn a_supporting_file_that_will_not_open_is_a_row_inside_its_bundle() {
+        let dir = scratch("unread-supporting");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&dir.join("alpha").join("REFERENCE.md"), "# supporting");
+        write(&dir.join("alpha").join("FORMS.md"), "# forms");
+        let Some(_held) = hold(&dir.join("alpha").join("FORMS.md")) else { return };
+
+        let walked = bundle_dirs(&dir).unwrap();
+        let rows = inside(walked.entries()[0]).unwrap();
+        assert_eq!(outline(rows, 0), vec!["FORMS.md (unreadable)", "REFERENCE"]);
+        assert_eq!(walked.unreadable().len(), 1);
+    }
+
+    #[test]
+    fn a_bundle_directory_that_will_not_open_holds_a_row_saying_so() {
+        let dir = scratch("unread-bundle");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&dir.join("alpha").join("REFERENCE.md"), "# supporting");
+        let Some(_held) = hold(&dir.join("alpha")) else { return };
+
+        let walked = bundle_dirs(&dir).unwrap();
+        assert_eq!(names(&walked), vec!["alpha"]);
+        let rows = inside(walked.entries()[0]).unwrap();
+        assert_eq!(outline(rows, 0), vec!["alpha (unreadable)"]);
+        assert_eq!(walked.unreadable().len(), 1);
     }
 
     // -------------------------------------------------------------------links
@@ -652,7 +793,7 @@ mod tests {
         let mut found = names(&walked);
         found.sort();
         assert_eq!(found, vec!["linked", "real"]);
-        assert_eq!(walked.unreadable, 0);
+        assert_eq!(walked.unreadable().len(), 0);
     }
 
     #[test]
@@ -720,6 +861,24 @@ mod tests {
 
         let walked = bundle_dirs(&skills).unwrap();
         assert!(inside(walked.entries()[0]).is_none());
+    }
+
+    #[test]
+    fn a_bundle_reached_through_a_link_is_searched_by_its_lead_alone() {
+        // What is behind the link is searched through the Source that owns
+        // it — `agents/skills`, for `grill-with-docs` on this machine.
+        let dir = scratch("link-bundle-search");
+        let skills = dir.join("skills");
+        fs::create_dir_all(&skills).unwrap();
+        write(&dir.join("target").join("SKILL.md"), "---\nname: linked\n---\nlead\n");
+        write(&dir.join("target").join("FORMAT.md"), "mentions adr\n");
+        if !link_dir(&dir.join("target"), &skills.join("linked")) {
+            return;
+        }
+
+        let walked = bundle_dirs(&skills).unwrap();
+        assert!(walked.entries()[0].matches(&words(&["lead"])));
+        assert!(!walked.entries()[0].matches(&words(&["adr"])));
     }
 
     #[test]

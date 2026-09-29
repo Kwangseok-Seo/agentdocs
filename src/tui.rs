@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::{self, Write};
 use std::panic;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -20,7 +20,7 @@ use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
 use crate::entry::{Entry, EntryKind, Node};
-use crate::listing::{failed, heading, printable};
+use crate::listing::{failed, heading, printable, reason};
 use crate::markdown;
 use crate::source::{Scope, Source, Walked};
 
@@ -132,9 +132,10 @@ impl Row<'_> {
 
     /// The row as the Entries pane draws it: indented by its depth, and marked
     /// `▸` when it has rows to show, `▾` once they are showing. A link standing
-    /// in for a Bundle says so, since nothing below it was looked at. A name
-    /// comes out of somebody else's file, so it passes through `printable`, as
-    /// the listing's names do.
+    /// in for a Bundle says so, since nothing below it was looked at, and so
+    /// does anything that could not be read, with the reason. A name comes out
+    /// of somebody else's file, so it passes through `printable`, as the
+    /// listing's names do.
     fn line(&self, open: &HashSet<PathBuf>) -> String {
         let marker = match (self.opens(), open.contains(self.node.path())) {
             (false, _) => " ",
@@ -142,16 +143,21 @@ impl Row<'_> {
             (true, true) => "▾",
         };
         let label = match self.node {
-            Node::Dir { path, .. } => {
-                format!("{}/", printable(&path.file_name().unwrap_or(path.as_os_str()).to_string_lossy()))
-            }
+            Node::Dir { path, .. } => format!("{}/", printable(&file_name(path))),
             Node::Entry(Entry { name, kind: EntryKind::Bundle { inside: None, .. }, .. }) => {
                 format!("{} (link)", printable(name))
             }
             Node::Entry(entry) => printable(&entry.name),
+            Node::Unreadable { path, reason: why } => format!("{} ({})", printable(&file_name(path)), reason(*why)),
         };
         format!("{}{marker} {label}", "  ".repeat(self.depth))
     }
+}
+
+/// The last part of `path`, which is how a directory or an unreadable row is
+/// named on screen.
+fn file_name(path: &Path) -> String {
+    path.file_name().unwrap_or(path.as_os_str()).to_string_lossy().into_owned()
 }
 
 /// The rows a tree shows: every node at this level, and under each open one
@@ -436,11 +442,12 @@ impl App {
         self.rows().get(self.entries.selected()?).copied()
     }
 
-    /// The selected Entry: the selected row, unless that is a directory.
+    /// The selected Entry: the selected row, unless that is a directory or
+    /// something that could not be read.
     fn entry(&self) -> Option<&Entry> {
         match self.row()?.node {
             Node::Entry(entry) => Some(entry),
-            Node::Dir { .. } => None,
+            Node::Dir { .. } | Node::Unreadable { .. } => None,
         }
     }
 
@@ -531,8 +538,13 @@ impl App {
                 (None, None) => vec![Line::raw("(this Bundle has no SKILL.md)")],
                 (None, Some(_)) => vec![Line::raw("(the file could not be read)")],
             },
-            None if self.row().is_some() => vec![Line::raw("(a directory)")],
-            None => Vec::new(),
+            None => match self.row().map(|row| row.node) {
+                Some(Node::Unreadable { reason: why, .. }) => {
+                    vec![Line::raw(format!("(this could not be read: {})", reason(*why)))]
+                }
+                Some(_) => vec![Line::raw("(a directory)")],
+                None => Vec::new(),
+            },
         };
 
         // The rows already fit. ratatui's wrapping stays as a net for a row
@@ -1226,6 +1238,11 @@ mod tests {
     fn nested(name: &str) -> App {
         let dir = scratch(name);
         write(&dir.join("guide").join("deep").join("end.md"), "# end\n");
+        nested_in(dir)
+    }
+
+    /// `dir` as a docs Source, with j and k handed to its Entries.
+    fn nested_in(dir: PathBuf) -> App {
         let mut app = app(vec![Source::new("docs", dir, Scope::Project, Walk::MarkdownTree)]);
         press(&mut app, &[KeyCode::Tab]);
         app
@@ -1348,6 +1365,20 @@ mod tests {
         let mut app = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
         press(&mut app, &[KeyCode::Tab, KeyCode::Char('l'), KeyCode::Enter]);
         assert_eq!(tree(&mut app), ["  dream"]);
+    }
+
+    #[test]
+    fn what_could_not_be_read_is_a_row_that_says_why() {
+        let dir = scratch("tui-tree-unread");
+        write(&dir.join("guide").join("secret").join("end.md"), "# end\n");
+        let Some(_held) = hold(&dir.join("guide").join("secret")) else { return };
+
+        let mut app = nested_in(dir);
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Char('j')]);
+        assert_eq!(tree(&mut app), ["▾ guide/", "    secret (unreadable)"]);
+        let rows = screen(&mut app, 100, 12).join("\n");
+        assert!(rows.contains("docs:0 (1 unreadable)"), "{rows}");
+        assert!(rows.contains("(this could not be read: unreadable)"), "{rows}");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::entry::Entry;
+use crate::entry::{Entry, EntryKind, Hit, Node};
 use crate::source::{Walked, md_entry};
 
 /// A fresh directory under the system temp directory, named after the test
@@ -35,6 +35,25 @@ pub fn entry_with(name: &str, text: Option<&str>) -> Entry {
     entry
 }
 
+/// A Bundle named `name` as if its Lead had held `text`, with `inside` as
+/// the rows below its Lead — `None` for a link that was not walked into.
+pub fn bundle_with(name: &str, text: Option<&str>, inside: Option<Vec<Node>>) -> Entry {
+    let path = PathBuf::from(name);
+    Entry {
+        name: name.to_string(),
+        kind: EntryKind::Bundle { lead: Some(path.join("SKILL.md")), inside },
+        path,
+        description: None,
+        text: text.map(|t| t.to_string()),
+    }
+}
+
+/// A Hit as three parts: the name of the supporting file it is in, or `""`
+/// for the Entry's own file; the line's number; the line.
+pub fn hit(found: Option<Hit<'_>>) -> Option<(&str, usize, &str)> {
+    found.map(|h| (h.within.map_or("", |entry| entry.name.as_str()), h.number, h.line))
+}
+
 /// Search terms the way `main` hands them over: already lowercased.
 pub fn words(list: &[&str]) -> Vec<String> {
     list.iter().map(|w| w.to_string()).collect()
@@ -54,6 +73,29 @@ pub fn link_dir(target: &Path, link: &Path) -> bool {
         eprintln!("SKIPPED {}: cannot create a directory link ({:?})", link.display(), e.kind());
     }
     made.is_ok()
+}
+
+/// Hold `path` — a file or a directory — open so that nothing else can open
+/// it while the returned handle lives: something this program cannot read,
+/// which `std` has no other way to make. Windows lets a handle refuse to be
+/// shared; elsewhere there is no such hold, and the test says so on stderr.
+pub fn hold(path: &Path) -> Option<fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_BACKUP_SEMANTICS, without which a directory cannot be
+        // opened at all.
+        let held = fs::OpenOptions::new().read(true).share_mode(0).custom_flags(0x0200_0000).open(path);
+        if let Err(e) = &held {
+            eprintln!("SKIPPED {}: cannot hold it open ({:?})", path.display(), e.kind());
+        }
+        held.ok()
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!("SKIPPED {}: no way to hold a path open on this platform", path.display());
+        None
+    }
 }
 
 pub fn link_file(target: &Path, link: &Path) -> bool {

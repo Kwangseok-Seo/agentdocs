@@ -29,11 +29,11 @@ The file that represents a Bundle, supplying its name and preview (for example `
 _Avoid_: main file, index, root document
 
 **Unreadable**:
-Something a Walk found but could not look at — an entry the system would not describe, or a directory that would not open.
+Something a Walk found but could not look at — an entry the system would not describe, a directory that would not open, or a document that would not open. It is shown where it was found, with the reason.
 _Avoid_: error, failure, broken
 
 **Hit**:
-The first line of an Entry's text that holds any of the words being searched for.
+The first line of an Entry's text that holds any of the words being searched for — for a Bundle, a line of its Lead, or else of the first of its supporting files that has one.
 _Avoid_: snippet, match line, excerpt
 
 ## Relationships
@@ -43,7 +43,7 @@ _Avoid_: snippet, match line, excerpt
 - A **Source** holds zero or more **Entries**
 - An **Entry** is either a single file or one **Bundle**
 - A **Bundle** has exactly one **Lead** and zero or more supporting files
-- A **Walk** reports the **Entries** it found and how many things it found **Unreadable**
+- A **Walk** reports the **Entries** it found and the things it found **Unreadable**, each where it found it
 - An **Entry** kept by a search has at most one **Hit**; one kept for its name alone has none
 
 ## Example dialogue
