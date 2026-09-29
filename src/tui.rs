@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::panic;
 use std::path::{Path, PathBuf};
@@ -34,6 +34,9 @@ const KEYS: &str = " j/k ↓/↑ move   l/h open/close   tab pane   click select
 const COPIED: &str = "copied to clipboard ";
 const COPIED_FOR: Duration = Duration::from_secs(2);
 
+/// How many rows one notch of the wheel scrolls the preview — herdr's default.
+const WHEEL_ROWS: isize = 3;
+
 /// What the screen shows, and which part of it is selected. Keys and the mouse
 /// change it; drawing only reads it — and notes where and what it drew, for
 /// the mouse.
@@ -47,6 +50,10 @@ pub struct App {
     /// from what the Walk found, which the screen only reads, and by path, so
     /// that a row is still open when its Source is looked at again.
     open: HashSet<PathBuf>,
+    /// How far down each file's preview has been scrolled, in rows, by path:
+    /// kept as `open` is, so that a file is where it was left when it is
+    /// looked at again. Drawing holds it to the file's last row.
+    scrolled: HashMap<PathBuf, usize>,
     focus: Pane,
     /// The Sources, Entries and Preview panes as last drawn.
     areas: [Rect; 3],
@@ -61,12 +68,12 @@ pub struct App {
     copied_until: Option<Instant>,
 }
 
-/// The pane that j and k move in. The preview has nothing to move through
-/// until it scrolls, in M8.
+/// The pane that j and k move in. In the preview they scroll.
 #[derive(Clone, Copy, PartialEq)]
 enum Pane {
     Sources,
     Entries,
+    Preview,
 }
 
 /// Text dragged over in the preview, in screen cells. It works as herdr's
@@ -200,6 +207,7 @@ impl App {
             source: 0,
             entries: ListState::default().with_selected(Some(0)),
             open: HashSet::new(),
+            scrolled: HashMap::new(),
             focus: Pane::Sources,
             areas: [Rect::default(); 3],
             source_offset: 0,
@@ -211,8 +219,8 @@ impl App {
 
     /// Select what was clicked, and hand j and k to the pane it is in. A click
     /// on a border, a scope heading or below the last row selects nothing; one
-    /// inside the preview notes where a drag would start. Text selected earlier
-    /// is let go either way.
+    /// inside the preview also notes where a drag would start. Text selected
+    /// earlier is let go either way.
     fn click(&mut self, column: u16, row: u16) {
         let at = Position::new(column, row);
         let [sources, entries, _] = self.areas;
@@ -235,7 +243,17 @@ impl App {
                 self.entries.select(Some(index));
             }
         } else if self.preview_inner().contains(at) {
+            self.focus = Pane::Preview;
             self.selection = Some(Selection { anchor: at, head: at, phase: Phase::Pressed });
+        }
+    }
+
+    /// The wheel turned by `rows` over the screen. Over the preview it scrolls,
+    /// and lets go of selected text, as a key does; elsewhere it does nothing.
+    fn wheel(&mut self, column: u16, row: u16, rows: isize) {
+        if self.areas[2].contains(Position::new(column, row)) {
+            self.selection = None;
+            self.scroll(rows);
         }
     }
 
@@ -323,11 +341,16 @@ impl App {
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Pane::Sources => Pane::Entries,
-                    Pane::Entries => Pane::Sources,
+                    Pane::Entries => Pane::Preview,
+                    Pane::Preview => Pane::Sources,
                 };
             }
             KeyCode::Char('j') | KeyCode::Down => self.down(),
             KeyCode::Char('k') | KeyCode::Up => self.up(),
+            // A page of the preview, whichever pane has j and k: these two
+            // mean nothing anywhere else.
+            KeyCode::PageDown => self.scroll(self.page()),
+            KeyCode::PageUp => self.scroll(-self.page()),
             KeyCode::Char('l') | KeyCode::Right if self.focus == Pane::Entries => self.open_row(),
             KeyCode::Char('h') | KeyCode::Left if self.focus == Pane::Entries => self.close_row(),
             KeyCode::Enter if self.focus == Pane::Entries => self.toggle_row(),
@@ -387,6 +410,7 @@ impl App {
                     self.entries.select(Some(at + 1));
                 }
             }
+            Pane::Preview => self.scroll(1),
         }
     }
 
@@ -404,7 +428,24 @@ impl App {
                     self.entries.select(Some(at - 1));
                 }
             }
+            Pane::Preview => self.scroll(-1),
         }
+    }
+
+    /// Scroll the selected row's preview down by `rows`, or up when `rows` is
+    /// below zero. Up stops at the first row; how far down it may go depends
+    /// on how the file is cut into rows, which only drawing knows, so drawing
+    /// holds it there.
+    fn scroll(&mut self, rows: isize) {
+        let Some(row) = self.row() else { return };
+        let path = row.node.path().to_path_buf();
+        let top = self.scrolled.entry(path).or_default();
+        *top = top.saturating_add_signed(rows);
+    }
+
+    /// How many rows a page of the preview is: as many as it showed last time.
+    fn page(&self) -> isize {
+        self.preview_inner().height as isize
     }
 
     /// Another Source's Entries start from their first row, scrolled to the top.
@@ -530,11 +571,14 @@ impl App {
         frame.render_stateful_widget(list, area, &mut self.entries);
     }
 
-    /// The selected Entry's file drawn as Markdown, with any dragged-over text
-    /// shown reversed.
-    fn render_preview(&self, frame: &mut Frame, area: Rect) {
+    /// The selected Entry's file drawn as Markdown, from where it was scrolled
+    /// to, with any dragged-over text shown reversed. When the file has more
+    /// rows than show, the title says which.
+    fn render_preview(&mut self, frame: &mut Frame, area: Rect) {
         let width = area.width.saturating_sub(2);
-        let lines = match self.entry() {
+        let height = usize::from(area.height.saturating_sub(2));
+        let path = self.row().map(|row| row.node.path().to_path_buf());
+        let mut lines = match self.entry() {
             Some(entry) => match (&entry.text, entry.doc()) {
                 (Some(text), _) => markdown::render(text, width),
                 (None, None) => vec![Line::raw("(this Bundle has no SKILL.md)")],
@@ -549,13 +593,28 @@ impl App {
             },
         };
 
+        // Scrolled no further than puts the last row at the bottom. What is
+        // held here is written back once `lines` is done with, since `lines`
+        // borrows the file's text out of `self`.
+        let rows = lines.len();
+        let most = rows.saturating_sub(height);
+        let top = path.as_ref().and_then(|path| self.scrolled.get(path)).copied().unwrap_or(0).min(most);
+        lines.drain(..top);
+
+        let mut block = Block::bordered().title("Preview").border_style(self.border(Pane::Preview));
+        if rows > height {
+            let shown = format!("{}-{}/{rows}", top + 1, (top + height).min(rows));
+            block = block.title_top(Line::from(shown).right_aligned());
+        }
+
         // The rows already fit. ratatui's wrapping stays as a net for a row
         // whose width it counts differently — without it, that row's end
         // would be cut off rather than moved down.
-        let preview = Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title("Preview"));
+        let preview = Paragraph::new(lines).wrap(Wrap { trim: false }).block(block);
         frame.render_widget(preview, area);
+        if let Some(path) = path {
+            self.scrolled.insert(path, top);
+        }
 
         if let Some(selection) = self.selection {
             if selection.phase != Phase::Pressed {
@@ -655,9 +714,10 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
                         copy(&text)?;
                     }
                 }
-                // The wheel is left alone on purpose. Moving the selection with
-                // it surprised; it will scroll the preview once the preview
-                // scrolls, in M8.
+                // Only over the preview: moving the selection with the wheel
+                // surprised, in M5.
+                MouseEventKind::ScrollDown => app.wheel(mouse.column, mouse.row, WHEEL_ROWS),
+                MouseEventKind::ScrollUp => app.wheel(mouse.column, mouse.row, -WHEEL_ROWS),
                 _ => {}
             },
             _ => {}
@@ -766,7 +826,8 @@ mod tests {
     fn another_source_starts_from_its_first_entry() {
         let mut app = three_rules("tui-reset");
         press(&mut app, &[KeyCode::Tab, KeyCode::Char('j'), KeyCode::Char('j')]);
-        press(&mut app, &[KeyCode::Tab, KeyCode::Char('j'), KeyCode::Char('k')]);
+        // Round past the preview, back to the Sources.
+        press(&mut app, &[KeyCode::Tab, KeyCode::Tab, KeyCode::Char('j'), KeyCode::Char('k')]);
         assert_eq!(app.source, 0);
         assert_eq!(app.entries.selected(), Some(0));
     }
@@ -913,6 +974,165 @@ mod tests {
         draw(&mut app, 100, 5);
         app.click(5, 1);
         assert_eq!(app.source, 0);
+    }
+
+    // ------------------------------------------------------------ scrolling
+    //
+    // On a 100 x 8 screen the preview shows five rows, 1-5, in columns 61-98.
+    // `tall` has two files: `long`, twelve rows — `• 1` to `• 12` — and
+    // `short`, one.
+
+    fn tall(name: &str) -> App {
+        let dir = scratch(name);
+        let items: String = (1..=12).map(|n| format!("- {n}\n")).collect();
+        write(&dir.join("long.md"), &items);
+        write(&dir.join("short.md"), "# short\n");
+        app(vec![Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles)])
+    }
+
+    /// The preview's five rows as a 100 x 8 screen shows them, each without
+    /// the blanks after it.
+    fn preview(app: &mut App) -> Vec<String> {
+        let cells = draw(app, 100, 8);
+        (1..6)
+            .map(|y| (61..99).map(|x| cells[(x, y)].symbol()).collect::<String>().trim_end().to_string())
+            .collect()
+    }
+
+    /// The first of them.
+    fn first_row(app: &mut App) -> String {
+        preview(app)[0].clone()
+    }
+
+    #[test]
+    fn tab_goes_round_the_three_panes_and_the_preview_shows_when_it_has_j_and_k() {
+        let mut app = tall("tui-tab-round");
+        press(&mut app, &[KeyCode::Tab]);
+        assert!(app.focus == Pane::Entries);
+        press(&mut app, &[KeyCode::Tab]);
+        assert!(app.focus == Pane::Preview);
+        assert_eq!(draw(&mut app, 100, 8)[(60, 0)].fg, Color::Yellow);
+        press(&mut app, &[KeyCode::Tab]);
+        assert!(app.focus == Pane::Sources);
+    }
+
+    #[test]
+    fn in_the_preview_j_scrolls_a_row_down_and_k_back_up() {
+        let mut app = tall("tui-scroll-jk");
+        press(&mut app, &[KeyCode::Tab, KeyCode::Tab, KeyCode::Char('j')]);
+        assert_eq!(preview(&mut app), ["• 2", "• 3", "• 4", "• 5", "• 6"]);
+        press(&mut app, &[KeyCode::Char('k')]);
+        assert_eq!(first_row(&mut app), "• 1");
+    }
+
+    #[test]
+    fn the_preview_stops_at_its_first_row() {
+        let mut app = tall("tui-scroll-top");
+        press(&mut app, &[KeyCode::Tab, KeyCode::Tab, KeyCode::Char('k')]);
+        assert_eq!(first_row(&mut app), "• 1");
+    }
+
+    #[test]
+    fn the_preview_stops_with_its_last_row_at_the_bottom_and_goes_back_up_from_there() {
+        let mut app = tall("tui-scroll-end");
+        press(&mut app, &[KeyCode::Tab, KeyCode::Tab]);
+        press(&mut app, &[KeyCode::Char('j'); 20]);
+        assert_eq!(preview(&mut app), ["• 8", "• 9", "• 10", "• 11", "• 12"]);
+        // One row up from there, not from twenty rows down.
+        press(&mut app, &[KeyCode::Char('k')]);
+        assert_eq!(first_row(&mut app), "• 7");
+    }
+
+    #[test]
+    fn a_taller_preview_takes_back_what_it_no_longer_needs_scrolled() {
+        let mut app = tall("tui-scroll-taller");
+        press(&mut app, &[KeyCode::Tab, KeyCode::Tab]);
+        press(&mut app, &[KeyCode::Char('j'); 20]);
+        draw(&mut app, 100, 8);
+        // Twenty rows tall, the preview holds all twelve.
+        draw(&mut app, 100, 20);
+        assert_eq!(first_row(&mut app), "• 1");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_preview_three_rows_and_nothing_elsewhere() {
+        let mut app = tall("tui-scroll-wheel");
+        draw(&mut app, 100, 8);
+        app.wheel(80, 3, WHEEL_ROWS);
+        assert_eq!(first_row(&mut app), "• 4");
+        app.wheel(35, 3, WHEEL_ROWS);
+        assert_eq!(first_row(&mut app), "• 4");
+        assert_eq!(app.entries.selected(), Some(0));
+        app.wheel(80, 3, -WHEEL_ROWS);
+        assert_eq!(first_row(&mut app), "• 1");
+    }
+
+    #[test]
+    fn page_down_and_page_up_scroll_a_preview_of_rows_from_any_pane() {
+        let mut app = tall("tui-scroll-page");
+        draw(&mut app, 100, 8);
+        press(&mut app, &[KeyCode::PageDown]);
+        assert!(app.focus == Pane::Sources);
+        assert_eq!(first_row(&mut app), "• 6");
+        press(&mut app, &[KeyCode::PageUp]);
+        assert_eq!(first_row(&mut app), "• 1");
+    }
+
+    #[test]
+    fn a_file_is_where_it_was_left_when_it_is_looked_at_again() {
+        let mut app = tall("tui-scroll-kept");
+        draw(&mut app, 100, 8);
+        press(&mut app, &[KeyCode::PageDown, KeyCode::Tab, KeyCode::Char('j')]);
+        assert_eq!(first_row(&mut app), "# short");
+        press(&mut app, &[KeyCode::Char('k')]);
+        assert_eq!(first_row(&mut app), "• 6");
+    }
+
+    #[test]
+    fn a_file_keeps_where_it_was_left_when_rows_open_above_it() {
+        // `a/` above `long`: opening it puts `x` where `long` was.
+        let dir = scratch("tui-scroll-above");
+        let items: String = (1..=12).map(|n| format!("- {n}\n")).collect();
+        write(&dir.join("long.md"), &items);
+        write(&dir.join("a").join("x.md"), "# x\n");
+        let mut app = app(vec![Source::new("docs", dir, Scope::Project, Walk::MarkdownTree)]);
+        draw(&mut app, 100, 8);
+
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('j'), KeyCode::PageDown]);
+        assert_eq!(first_row(&mut app), "• 6");
+        press(&mut app, &[KeyCode::Char('k'), KeyCode::Char('l'), KeyCode::Char('j')]);
+        assert_eq!(first_row(&mut app), "# x");
+        press(&mut app, &[KeyCode::Char('j')]);
+        assert_eq!(first_row(&mut app), "• 6");
+    }
+
+    #[test]
+    fn the_title_says_which_rows_show_only_when_not_all_of_them_do() {
+        let mut app = tall("tui-scroll-title");
+        assert!(screen(&mut app, 100, 8)[0].contains("1-5/12"));
+        press(&mut app, &[KeyCode::PageDown]);
+        assert!(screen(&mut app, 100, 8)[0].contains("6-10/12"));
+        press(&mut app, &[KeyCode::PageDown]);
+        assert!(screen(&mut app, 100, 8)[0].contains("8-12/12"));
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('j')]);
+        assert!(!screen(&mut app, 100, 8)[0].contains('/'));
+    }
+
+    #[test]
+    fn a_click_in_the_preview_hands_it_j_and_k() {
+        let mut app = tall("tui-scroll-click");
+        click(&mut app, 80, 3);
+        assert!(app.focus == Pane::Preview);
+        press(&mut app, &[KeyCode::Char('j')]);
+        assert_eq!(first_row(&mut app), "• 2");
+    }
+
+    #[test]
+    fn the_wheel_lets_go_of_selected_text() {
+        let mut app = tall("tui-scroll-selection");
+        drag_across(&mut app, (61, 1), (63, 1));
+        app.wheel(80, 3, WHEEL_ROWS);
+        assert!(app.selection.is_none());
     }
 
     // ------------------------------------------------------------- dragging
@@ -1356,9 +1576,16 @@ mod tests {
     }
 
     #[test]
-    fn the_tree_keys_do_nothing_in_the_sources_pane() {
+    fn the_tree_keys_do_nothing_in_the_preview_or_the_sources_pane() {
         let mut app = nested("tui-tree-sources");
-        press(&mut app, &[KeyCode::Tab, KeyCode::Char('l'), KeyCode::Right, KeyCode::Enter]);
+        press(&mut app, &[KeyCode::Tab]);
+        assert!(app.focus == Pane::Preview);
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Right, KeyCode::Enter]);
+        assert_eq!(tree(&mut app), ["▸ guide/"]);
+
+        press(&mut app, &[KeyCode::Tab]);
+        assert!(app.focus == Pane::Sources);
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Right, KeyCode::Enter]);
         assert_eq!(tree(&mut app), ["▸ guide/"]);
     }
 
@@ -1396,7 +1623,10 @@ mod tests {
             Source::new("docs", dir.join("docs"), Scope::Project, Walk::MarkdownTree),
         ]);
         press(&mut app, &[KeyCode::Char('j'), KeyCode::Tab, KeyCode::Char('l')]);
-        press(&mut app, &[KeyCode::Tab, KeyCode::Char('k'), KeyCode::Char('j'), KeyCode::Tab]);
+        // Round past the preview to the Sources, up to `rules`, and back.
+        press(&mut app, &[KeyCode::Tab, KeyCode::Tab, KeyCode::Char('k')]);
+        assert_eq!(app.source, 0);
+        press(&mut app, &[KeyCode::Char('j'), KeyCode::Tab]);
         assert_eq!(tree(&mut app), ["▾ guide/", "    end"]);
     }
 
