@@ -345,12 +345,14 @@ impl App {
     }
 
     /// Hide the rows below the selected one. On a row with nothing showing
-    /// below it, go up to the row it sits under instead.
+    /// below it, go up to the row it sits under instead. Whether a row is open
+    /// is asked only of a row that opens: what could not be read inside a
+    /// Bundle that would not open has the Bundle's own path.
     fn close_row(&mut self) {
         let rows = self.rows();
         let Some(at) = self.entries.selected() else { return };
         let Some(row) = rows.get(at) else { return };
-        if self.open.contains(row.node.path()) {
+        if row.opens() && self.open.contains(row.node.path()) {
             let path = row.node.path().to_path_buf();
             self.open.remove(&path);
         } else if let Some(parent) = rows[..at].iter().rposition(|r| r.depth + 1 == row.depth) {
@@ -1288,6 +1290,60 @@ mod tests {
         press(&mut app, &[KeyCode::Char('h'), KeyCode::Char('h')]);
         assert_eq!(tree(&mut app), ["▸ guide/"]);
         assert_eq!(app.entries.selected(), Some(0));
+    }
+
+    #[test]
+    fn h_goes_up_to_the_parent_not_to_the_row_above() {
+        // Two rows inside `guide/`, and one beside it. Rows are found by name,
+        // since the order `read_dir` gives is the platform's.
+        let dir = scratch("tui-tree-parent");
+        write(&dir.join("guide").join("a.md"), "# a\n");
+        write(&dir.join("guide").join("b.md"), "# b\n");
+        write(&dir.join("top.md"), "# top\n");
+        let mut app = nested_in(dir);
+        let guide = tree(&mut app).iter().position(|r| r == "▸ guide/").unwrap();
+        app.entries.select(Some(guide));
+        press(&mut app, &[KeyCode::Char('l')]);
+
+        // The second row inside `guide/`: the row above it is its sibling.
+        app.entries.select(Some(guide + 2));
+        press(&mut app, &[KeyCode::Char('h')]);
+        assert_eq!(app.entries.selected(), Some(guide));
+
+        // A row at the top has nothing to go up to.
+        let top = tree(&mut app).iter().position(|r| r == "  top").unwrap();
+        app.entries.select(Some(top));
+        press(&mut app, &[KeyCode::Char('h')]);
+        assert_eq!(app.entries.selected(), Some(top));
+    }
+
+    #[test]
+    fn l_or_enter_on_a_row_with_nothing_below_leaves_h_to_go_up() {
+        let mut app = nested("tui-tree-leaf");
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Char('j'), KeyCode::Char('l'), KeyCode::Char('j')]);
+        assert_eq!(app.entry().unwrap().name, "end");
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Enter, KeyCode::Char('h')]);
+        assert_eq!(app.entries.selected(), Some(1));
+    }
+
+    #[test]
+    fn h_inside_a_bundle_that_would_not_open_goes_up_to_the_bundle() {
+        // The row saying the directory would not open has the Bundle's path.
+        let dir = scratch("tui-tree-held-bundle");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&dir.join("alpha").join("REFERENCE.md"), "# supporting\n");
+        let Some(_held) = hold(&dir.join("alpha")) else { return };
+
+        let mut app = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('l'), KeyCode::Char('j')]);
+        assert_eq!(tree(&mut app), ["▾ alpha", "    alpha (unreadable)"]);
+        press(&mut app, &[KeyCode::Char('h')]);
+        assert_eq!(app.entries.selected(), Some(0));
+        assert_eq!(tree(&mut app), ["▾ alpha", "    alpha (unreadable)"]);
+
+        // Nor do l and Enter on that row reach the Bundle.
+        press(&mut app, &[KeyCode::Char('j'), KeyCode::Char('l'), KeyCode::Enter]);
+        assert_eq!(tree(&mut app), ["▾ alpha", "    alpha (unreadable)"]);
     }
 
     #[test]

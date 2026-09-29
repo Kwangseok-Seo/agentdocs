@@ -466,6 +466,26 @@ mod tests {
     }
 
     #[test]
+    fn a_file_named_with_a_dot_is_still_a_document() {
+        // Only a directory is passed over for its leading dot.
+        let dir = scratch("tree-dotfile");
+        write(&dir.join(".notes.md"), "# notes");
+        assert_eq!(outline(&md_tree(&dir).unwrap().nodes, 0), vec![".notes"]);
+    }
+
+    #[test]
+    fn a_source_below_a_hidden_directory_still_walks_its_own() {
+        // Every global Source lives under `~/.claude` or `~/.agents`: the dot
+        // that counts is in the name of a directory the walk comes to, not in
+        // the path it started from.
+        let dir = scratch("tree-dotparent").join(".claude").join("skills");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&dir.join("alpha").join("examples").join("one.md"), "# one");
+        let walked = bundle_dirs(&dir).unwrap();
+        assert_eq!(inside(walked.entries()[0]).unwrap().len(), 1);
+    }
+
+    #[test]
     fn a_tree_whose_own_directory_is_absent_fails() {
         let dir = scratch("treeabsent").join("nope");
         assert_eq!(md_tree(&dir).unwrap_err().kind(), io::ErrorKind::NotFound);

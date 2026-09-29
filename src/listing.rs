@@ -519,6 +519,16 @@ mod tests {
     }
 
     #[test]
+    fn the_mark_is_the_name_the_row_has_not_the_file_name() {
+        // Its frontmatter renamed this supporting file, as it renames its row.
+        let mut reference = entry_with("REFERENCE", Some("see ADR here"));
+        reference.name = "renamed".to_string();
+        let alpha = bundle_with("alpha", Some("lead"), Some(vec![Node::Entry(reference)]));
+        let walked = Walked { nodes: vec![Node::Entry(alpha)] };
+        assert_eq!(listing("skills", &walked, &words(&["adr"]))[2], "      renamed:1: see ADR here");
+    }
+
+    #[test]
     fn the_name_marking_a_line_never_carries_a_control_character() {
         let reference = entry_with("\u{1b}[31mREF", Some("adr"));
         let alpha = bundle_with("alpha", Some("lead"), Some(vec![Node::Entry(reference)]));
