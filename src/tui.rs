@@ -15,7 +15,7 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, List, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, List, ListState, Paragraph, Widget};
 use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
@@ -36,6 +36,10 @@ const COPIED_FOR: Duration = Duration::from_secs(2);
 
 /// How many rows one notch of the wheel scrolls the preview — herdr's default.
 const WHEEL_ROWS: isize = 3;
+
+/// How often the preview scrolls a row toward a pointer dragged above or
+/// below it — herdr's interval.
+const AUTOSCROLL_EVERY: Duration = Duration::from_millis(30);
 
 /// What the screen shows, and which part of it is selected. Keys and the mouse
 /// change it; drawing only reads it — and notes where and what it drew, for
@@ -62,8 +66,6 @@ pub struct App {
     /// Text dragged over in the preview, from the moment the button goes down
     /// there until the next click or key.
     selection: Option<Selection>,
-    /// The whole screen as last drawn. Selected text is read back out of it.
-    drawn: Buffer,
     /// Until when the bottom row says that a drag was copied.
     copied_until: Option<Instant>,
 }
@@ -76,15 +78,37 @@ enum Pane {
     Preview,
 }
 
-/// Text dragged over in the preview, in screen cells. It works as herdr's
-/// does: the button going down only notes where a drag would start, nothing
-/// is selected until the pointer reaches another cell, and letting go keeps
-/// the highlight until the next click or key.
+/// Text dragged over in the preview. It works as herdr's does: the button
+/// going down only notes where a drag would start, nothing is selected until
+/// the pointer reaches another cell, and letting go keeps the highlight until
+/// the next click or key.
+///
+/// Both ends are cells of the text rather than of the screen, so that what is
+/// selected stays on the words it covers while the preview scrolls under it.
 #[derive(Clone, Copy)]
 struct Selection {
-    anchor: Position,
-    head: Position,
+    /// Where the button went down.
+    anchor: Spot,
+    /// Where the drag has got to: while dragging, the cell under the pointer
+    /// in the text as last drawn — which is why drawing moves it when the
+    /// text scrolls under a pointer that stays put.
+    head: Spot,
+    /// Where the pointer was last seen, on the screen. Held above or below
+    /// the preview, it is what the preview scrolls toward.
+    pointer: Position,
     phase: Phase,
+    /// When the preview next scrolls a row toward the pointer, once it has
+    /// begun to.
+    scroll_at: Option<Instant>,
+}
+
+/// A cell of the preview's text: which of the rows it is drawn in, counted
+/// from the file's first, and how many columns in from the preview's left
+/// edge. Rows come first, so the derived order reads as a page does.
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+struct Spot {
+    row: usize,
+    column: u16,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -98,29 +122,35 @@ enum Phase {
 }
 
 impl Selection {
-    /// The selected cells of each row, top to bottom, as (row, first column,
-    /// last column). The first row runs from where the drag started to the
-    /// right edge, the rows between are whole, and the last row stops where
-    /// the drag ended — the way a terminal selects. Both ends are held inside
-    /// `inner`, which may have shrunk since, if the window was resized.
-    fn rows(&self, inner: Rect) -> Vec<(u16, u16, u16)> {
-        if inner.is_empty() {
+    /// The selected cells of each row of the text, top to bottom, as (row,
+    /// first column, last column). The first row runs from where the drag
+    /// started to the right edge, the rows between are whole, and the last
+    /// row stops where the drag ended — the way a terminal selects. Columns
+    /// are held inside `width`, which may have shrunk since, if the window
+    /// was resized.
+    fn rows(&self, width: u16) -> Vec<(usize, u16, u16)> {
+        if width == 0 {
             return Vec::new();
         }
-        let a = clamp(self.anchor, inner);
-        let b = clamp(self.head, inner);
-        // Row first, then column. `Position` can be compared too, but its
-        // derived order looks at x first — the wrong way round for reading.
-        let (start, end) = if (a.y, a.x) <= (b.y, b.x) { (a, b) } else { (b, a) };
+        let right = width - 1;
+        let (start, end) = if self.anchor <= self.head { (self.anchor, self.head) } else { (self.head, self.anchor) };
 
-        (start.y..=end.y)
-            .map(|y| {
-                let first = if y == start.y { start.x } else { inner.x };
-                let last = if y == end.y { end.x } else { inner.right() - 1 };
-                (y, first, last)
+        (start.row..=end.row)
+            .map(|row| {
+                let first = if row == start.row { start.column.min(right) } else { 0 };
+                let last = if row == end.row { end.column.min(right) } else { right };
+                (row, first, last)
             })
             .collect()
     }
+}
+
+/// The cell of the text under `at`, in a preview drawn inside `inner` from
+/// row `top` down — the nearest one inside when `at` is outside. `inner`
+/// must not be empty.
+fn spot(at: Position, inner: Rect, top: usize) -> Spot {
+    let at = clamp(at, inner);
+    Spot { row: top + usize::from(at.y - inner.y), column: at.x - inner.x }
 }
 
 /// One row of the Entries pane: a row of the selected Source's tree, and how
@@ -212,7 +242,6 @@ impl App {
             areas: [Rect::default(); 3],
             source_offset: 0,
             selection: None,
-            drawn: Buffer::default(),
             copied_until: None,
         }
     }
@@ -244,30 +273,44 @@ impl App {
             }
         } else if self.preview_inner().contains(at) {
             self.focus = Pane::Preview;
-            self.selection = Some(Selection { anchor: at, head: at, phase: Phase::Pressed });
+            let cell = spot(at, self.preview_inner(), self.top());
+            self.selection = Some(Selection {
+                anchor: cell,
+                head: cell,
+                pointer: at,
+                phase: Phase::Pressed,
+                scroll_at: None,
+            });
         }
     }
 
-    /// The wheel turned by `rows` over the screen. Over the preview it scrolls,
-    /// and lets go of selected text, as a key does; elsewhere it does nothing.
+    /// The wheel turned by `rows` over the screen. Over the preview it scrolls;
+    /// selected text stays on the words it covers, and a drag going on takes
+    /// in what scrolls under the pointer. Elsewhere it does nothing.
     fn wheel(&mut self, column: u16, row: u16, rows: isize) {
         if self.areas[2].contains(Position::new(column, row)) {
-            self.selection = None;
             self.scroll(rows);
         }
     }
 
     /// The pointer moved with the button down. Only a drag that began inside
-    /// the preview selects; `Selection::rows` keeps it inside however far the
-    /// pointer goes.
+    /// the preview selects, and only what is inside it: past an edge, the
+    /// nearest cell inside — and above or below, the preview scrolls toward
+    /// the pointer, a row at a time, as `tick` is called.
     fn drag(&mut self, column: u16, row: u16) {
+        let at = Position::new(column, row);
+        let inner = self.preview_inner();
+        let top = self.top();
         let Some(selection) = &mut self.selection else { return };
         if selection.phase == Phase::Done {
             return;
         }
-        selection.head = Position::new(column, row);
-        if selection.head != selection.anchor {
+        if at != selection.pointer {
             selection.phase = Phase::Dragging;
+        }
+        selection.pointer = at;
+        if !inner.is_empty() {
+            selection.head = spot(at, inner, top);
         }
     }
 
@@ -288,40 +331,87 @@ impl App {
         Some(text)
     }
 
-    /// Take "copied to clipboard" down once its time is up.
+    /// Whatever has come due by `now`: "copied to clipboard" comes down once
+    /// its time is up, and a drag held above or below the preview scrolls it
+    /// a row toward the pointer, every `AUTOSCROLL_EVERY`.
     fn tick(&mut self, now: Instant) {
         if self.copied_until.is_some_and(|until| now >= until) {
             self.copied_until = None;
         }
+
+        let Some(rows) = self.autoscroll() else { return };
+        let Some(selection) = &mut self.selection else { return };
+        if selection.scroll_at.is_some_and(|at| now < at) {
+            return;
+        }
+        selection.scroll_at = Some(now + AUTOSCROLL_EVERY);
+        self.scroll(rows);
     }
 
-    /// How much longer "copied to clipboard" has to show, if it is showing.
-    fn copied_left(&self, now: Instant) -> Option<Duration> {
-        self.copied_until.map(|until| until.saturating_duration_since(now))
+    /// Which way the preview scrolls without a key or the wheel: while text is
+    /// dragged over with the pointer above the preview, up a row; below it,
+    /// down one.
+    fn autoscroll(&self) -> Option<isize> {
+        let selection = self.selection?;
+        if selection.phase != Phase::Dragging {
+            return None;
+        }
+        let inner = self.preview_inner();
+        if selection.pointer.y < inner.y {
+            Some(-1)
+        } else if selection.pointer.y >= inner.bottom() {
+            Some(1)
+        } else {
+            None
+        }
     }
 
-    /// The text under `selection`, read back out of the screen as drawn: one
-    /// line per row, without the blanks that pad a row out to the edge.
+    /// How long the loop may wait for a key or the mouse before something
+    /// comes due: "copied to clipboard" coming down, or the next row of a
+    /// scroll toward the pointer. `None` when nothing will.
+    fn wake_in(&self, now: Instant) -> Option<Duration> {
+        let copied = self.copied_until.map(|until| until.saturating_duration_since(now));
+        let scroll = self.autoscroll().map(|_| {
+            let at = self.selection.and_then(|selection| selection.scroll_at);
+            at.map_or(Duration::ZERO, |at| at.saturating_duration_since(now))
+        });
+        [copied, scroll].into_iter().flatten().min()
+    }
+
+    /// The text under `selection`: one line per row, without the blanks that
+    /// pad a row out to the edge. The rows are drawn again for this, at the
+    /// width the preview was last drawn — as many of them as were selected,
+    /// shown now or scrolled out of view.
     ///
     /// A wide character — Korean takes two cells — is written into its first
     /// cell, and ratatui blanks the cell it covers; that one is skipped. A wide
     /// character counts as selected when its first cell is, which is also the
     /// only cell whose highlight the terminal shows.
     fn selected_text(&self, selection: Selection) -> String {
-        let inner = self.preview_inner();
+        let width = self.preview_inner().width;
+        let rows = self.preview_lines(width);
+        let mut cells = Buffer::empty(Rect::new(0, 0, width, 1));
         let mut lines = Vec::new();
 
-        for (y, first, last) in selection.rows(inner) {
+        for (row, first, last) in selection.rows(width) {
+            let Some(text) = rows.get(row) else {
+                // Below the file's last row, where the preview is blank.
+                lines.push(String::new());
+                continue;
+            };
+            cells.reset();
+            Paragraph::new(text.clone()).render(cells.area, &mut cells);
+
             let mut line = String::new();
             let mut covered = 0;
             // From the left edge rather than from `first`: whether a cell is
             // covered depends on the cells before it.
-            for x in inner.x..=last {
+            for x in 0..=last {
                 if covered > 0 {
                     covered -= 1;
                     continue;
                 }
-                let symbol = self.drawn[(x, y)].symbol();
+                let symbol = cells[(x, 0)].symbol();
                 covered = symbol.width().saturating_sub(1);
                 if x >= first {
                     line.push_str(symbol);
@@ -448,6 +538,13 @@ impl App {
         self.preview_inner().height as isize
     }
 
+    /// The row the selected row's preview begins at. Drawing writes back how
+    /// far it really went, so between a drawing and the next key or scroll
+    /// this is the row the preview was drawn from.
+    fn top(&self) -> usize {
+        self.row().and_then(|row| self.scrolled.get(row.node.path())).copied().unwrap_or(0)
+    }
+
     /// Another Source's Entries start from their first row, scrolled to the top.
     fn pick_source(&mut self, index: usize) {
         self.source = index;
@@ -518,7 +615,6 @@ impl App {
             let copied = Line::from(COPIED).right_aligned().style(Style::new().fg(Color::Green));
             frame.render_widget(copied, footer);
         }
-        self.drawn = frame.buffer_mut().clone();
     }
 
     /// The Sources pane row by row: the scope headings, and under them a line
@@ -571,14 +667,10 @@ impl App {
         frame.render_stateful_widget(list, area, &mut self.entries);
     }
 
-    /// The selected Entry's file drawn as Markdown, from where it was scrolled
-    /// to, with any dragged-over text shown reversed. When the file has more
-    /// rows than show, the title says which.
-    fn render_preview(&mut self, frame: &mut Frame, area: Rect) {
-        let width = area.width.saturating_sub(2);
-        let height = usize::from(area.height.saturating_sub(2));
-        let path = self.row().map(|row| row.node.path().to_path_buf());
-        let mut lines = match self.entry() {
+    /// What the preview shows for the selected row, cut into rows `width`
+    /// wide: its file drawn as Markdown, or a line saying why there is none.
+    fn preview_lines(&self, width: u16) -> Vec<Line<'_>> {
+        match self.entry() {
             Some(entry) => match (&entry.text, entry.doc()) {
                 (Some(text), _) => markdown::render(text, width),
                 (None, None) => vec![Line::raw("(this Bundle has no SKILL.md)")],
@@ -591,7 +683,21 @@ impl App {
                 Some(_) => vec![Line::raw("(a directory)")],
                 None => Vec::new(),
             },
-        };
+        }
+    }
+
+    /// The selected row's preview, from where it was scrolled to, with any
+    /// dragged-over text shown reversed. When the file has more rows than
+    /// show, the title says which.
+    ///
+    /// Each line is one row: the renderer cuts them to fit, and drawn across
+    /// this machine's 585 files at four widths none came out wider. So the
+    /// rows are drawn one to a line, and a selection's rows are the file's.
+    fn render_preview(&mut self, frame: &mut Frame, area: Rect) {
+        let inner = area.inner(Margin::new(1, 1));
+        let height = usize::from(inner.height);
+        let path = self.row().map(|row| row.node.path().to_path_buf());
+        let mut lines = self.preview_lines(inner.width);
 
         // Scrolled no further than puts the last row at the bottom. What is
         // held here is written back once `lines` is done with, since `lines`
@@ -606,22 +712,24 @@ impl App {
             let shown = format!("{}-{}/{rows}", top + 1, (top + height).min(rows));
             block = block.title_top(Line::from(shown).right_aligned());
         }
-
-        // The rows already fit. ratatui's wrapping stays as a net for a row
-        // whose width it counts differently — without it, that row's end
-        // would be cut off rather than moved down.
-        let preview = Paragraph::new(lines).wrap(Wrap { trim: false }).block(block);
-        frame.render_widget(preview, area);
+        frame.render_widget(Paragraph::new(lines).block(block), area);
         if let Some(path) = path {
             self.scrolled.insert(path, top);
         }
 
-        if let Some(selection) = self.selection {
-            if selection.phase != Phase::Pressed {
-                for (y, first, last) in selection.rows(self.preview_inner()) {
-                    let row = Rect::new(first, y, last - first + 1, 1);
-                    frame.buffer_mut().set_style(row, Style::new().reversed());
-                }
+        let Some(selection) = &mut self.selection else { return };
+        if selection.phase == Phase::Pressed || inner.is_empty() {
+            return;
+        }
+        // The text may have scrolled under a pointer that stayed put.
+        if selection.phase == Phase::Dragging {
+            selection.head = spot(selection.pointer, inner, top);
+        }
+        for (row, first, last) in selection.rows(inner.width) {
+            if (top..top + height).contains(&row) {
+                let y = inner.y + (row - top) as u16;
+                let cells = Rect::new(inner.x + first, y, last - first + 1, 1);
+                frame.buffer_mut().set_style(cells, Style::new().reversed());
             }
         }
     }
@@ -688,11 +796,12 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
         app.tick(Instant::now());
         terminal.draw(|frame| app.render(frame))?;
 
-        // While "copied to clipboard" shows, wait no longer than it has left:
-        // when the time runs out with nothing pressed, go round again so that
-        // `tick` takes it down.
-        if let Some(left) = app.copied_left(Instant::now()) {
-            if !event::poll(left)? {
+        // While something is due — "copied to clipboard" coming down, the
+        // next row of a scroll toward the pointer — wait no longer than until
+        // then: when the time runs out with nothing pressed, go round again so
+        // that `tick` sees to it.
+        if let Some(wait) = app.wake_in(Instant::now()) {
+            if !event::poll(wait)? {
                 continue;
             }
         }
@@ -1127,12 +1236,141 @@ mod tests {
         assert_eq!(first_row(&mut app), "• 2");
     }
 
+    // ------------------------------------------------ selecting and scrolling
+    //
+    // `tall` again: `• 1` to `• 12`, the bullet in column 61 and the number
+    // from 63. Row 7 is the keys, below the preview; row 0 its top border.
+
+    /// Whether the cell at the start of each of the preview's five rows is
+    /// drawn reversed.
+    fn reversed_rows(app: &mut App) -> Vec<bool> {
+        let cells = draw(app, 100, 8);
+        (1..6).map(|y| cells[(61, y)].modifier.contains(Modifier::REVERSED)).collect()
+    }
+
     #[test]
-    fn the_wheel_lets_go_of_selected_text() {
-        let mut app = tall("tui-scroll-selection");
+    fn selected_text_moves_with_its_words_when_the_wheel_scrolls() {
+        let mut app = tall("tui-select-wheel");
+        assert_eq!(drag_across(&mut app, (61, 5), (63, 5)).as_deref(), Some("• 5"));
+        app.wheel(80, 3, WHEEL_ROWS);
+        assert_eq!(reversed_rows(&mut app), [false, true, false, false, false]);
+        assert_eq!(preview(&mut app)[1], "• 5");
+    }
+
+    #[test]
+    fn selected_text_scrolled_out_of_view_is_not_drawn() {
+        let mut app = tall("tui-select-gone");
         drag_across(&mut app, (61, 1), (63, 1));
         app.wheel(80, 3, WHEEL_ROWS);
-        assert!(app.selection.is_none());
+        assert_eq!(reversed_rows(&mut app), [false; 5]);
+    }
+
+    #[test]
+    fn selected_text_running_on_below_the_preview_stops_at_its_border() {
+        // `• 6` to `• 10` selected, then the wheel up three rows: the last
+        // three of them are below the preview, where the border and the keys are.
+        let mut app = tall("tui-select-border");
+        draw(&mut app, 100, 8);
+        press(&mut app, &[KeyCode::PageDown]);
+        drag_across(&mut app, (61, 1), (64, 5));
+        app.wheel(80, 3, -WHEEL_ROWS);
+        let cells = draw(&mut app, 100, 8);
+        let reversed = |y: u16| cells[(61, y)].modifier.contains(Modifier::REVERSED);
+        assert_eq!((1..6).map(reversed).collect::<Vec<_>>(), [false, false, false, true, true]);
+        assert!(!reversed(6));
+        assert!(!reversed(7));
+    }
+
+    #[test]
+    fn a_drag_held_below_the_preview_scrolls_it_a_row_each_time_one_is_due() {
+        let mut app = tall("tui-select-below");
+        let start = Instant::now();
+        draw(&mut app, 100, 8);
+        app.click(61, 1);
+        app.drag(70, 7);
+        draw(&mut app, 100, 8);
+
+        app.tick(start);
+        assert_eq!(first_row(&mut app), "• 2");
+        app.tick(start + AUTOSCROLL_EVERY - Duration::from_millis(1));
+        assert_eq!(first_row(&mut app), "• 2");
+        app.tick(start + AUTOSCROLL_EVERY);
+        assert_eq!(first_row(&mut app), "• 3");
+    }
+
+    #[test]
+    fn what_a_drag_scrolls_past_is_copied_though_no_longer_in_view() {
+        let mut app = tall("tui-select-copy-below");
+        let start = Instant::now();
+        draw(&mut app, 100, 8);
+        app.click(61, 1);
+        app.drag(70, 7);
+        for n in 0..3 {
+            app.tick(start + AUTOSCROLL_EVERY * n);
+            draw(&mut app, 100, 8);
+        }
+        assert_eq!(first_row(&mut app), "• 4");
+        let copied = app.release(start).unwrap();
+        assert_eq!(copied, "• 1\n• 2\n• 3\n• 4\n• 5\n• 6\n• 7\n• 8");
+    }
+
+    #[test]
+    fn a_drag_held_above_the_preview_scrolls_it_up() {
+        let mut app = tall("tui-select-above");
+        let start = Instant::now();
+        draw(&mut app, 100, 8);
+        press(&mut app, &[KeyCode::PageDown, KeyCode::PageDown]);
+        draw(&mut app, 100, 8);
+        // The end of `• 12`, on the last row, up to the top border.
+        app.click(64, 5);
+        app.drag(61, 0);
+        for n in 0..2 {
+            app.tick(start + AUTOSCROLL_EVERY * n);
+            draw(&mut app, 100, 8);
+        }
+        assert_eq!(first_row(&mut app), "• 6");
+        let copied = app.release(start).unwrap();
+        assert_eq!(copied, "• 6\n• 7\n• 8\n• 9\n• 10\n• 11\n• 12");
+    }
+
+    #[test]
+    fn a_drag_inside_the_preview_scrolls_nothing_and_wakes_nothing() {
+        let mut app = tall("tui-select-inside");
+        let start = Instant::now();
+        draw(&mut app, 100, 8);
+        app.click(61, 1);
+        app.drag(70, 5);
+        app.tick(start);
+        assert_eq!(first_row(&mut app), "• 1");
+        assert_eq!(app.wake_in(start), None);
+    }
+
+    #[test]
+    fn the_loop_is_woken_when_the_next_row_is_due_and_not_after_letting_go() {
+        let mut app = tall("tui-select-wake");
+        let start = Instant::now();
+        draw(&mut app, 100, 8);
+        app.click(61, 1);
+        app.drag(70, 7);
+        assert_eq!(app.wake_in(start), Some(Duration::ZERO));
+        app.tick(start);
+        assert_eq!(app.wake_in(start), Some(AUTOSCROLL_EVERY));
+        draw(&mut app, 100, 8);
+        app.release(start);
+        assert_eq!(app.wake_in(start), Some(COPIED_FOR));
+    }
+
+    #[test]
+    fn the_wheel_during_a_drag_takes_in_what_scrolls_under_the_pointer() {
+        let mut app = tall("tui-select-wheel-drag");
+        draw(&mut app, 100, 8);
+        app.click(61, 1);
+        app.drag(70, 5);
+        draw(&mut app, 100, 8);
+        app.wheel(80, 3, WHEEL_ROWS);
+        draw(&mut app, 100, 8);
+        let copied = app.release(Instant::now()).unwrap();
+        assert_eq!(copied, "• 1\n• 2\n• 3\n• 4\n• 5\n• 6\n• 7\n• 8");
     }
 
     // ------------------------------------------------------------- dragging
@@ -1310,13 +1548,13 @@ mod tests {
         let row = bottom_row(&mut app);
         assert!(row.starts_with(KEYS), "{row:?}");
         assert!(row.ends_with(COPIED), "{row:?}");
-        assert_eq!(app.copied_left(start), Some(COPIED_FOR));
+        assert_eq!(app.wake_in(start), Some(COPIED_FOR));
 
         app.tick(start + COPIED_FOR - Duration::from_millis(1));
         assert!(bottom_row(&mut app).ends_with(COPIED));
         app.tick(start + COPIED_FOR);
         assert!(!bottom_row(&mut app).contains(COPIED.trim_end()));
-        assert_eq!(app.copied_left(start + COPIED_FOR), None);
+        assert_eq!(app.wake_in(start + COPIED_FOR), None);
     }
 
     #[test]
@@ -1325,7 +1563,7 @@ mod tests {
         drag_across(&mut app, (70, 4), (80, 4));
         drag_across(&mut app, (63, 1), (63, 1));
         assert!(!bottom_row(&mut app).contains(COPIED.trim_end()));
-        assert_eq!(app.copied_left(Instant::now()), None);
+        assert_eq!(app.wake_in(Instant::now()), None);
     }
 
     #[test]
