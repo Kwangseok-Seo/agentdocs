@@ -1,5 +1,7 @@
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::panic;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -17,13 +19,15 @@ use ratatui::widgets::{Block, List, ListState, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
-use crate::entry::Entry;
+use crate::entry::{Entry, EntryKind, Node};
 use crate::listing::{failed, heading, printable};
 use crate::markdown;
 use crate::source::{Scope, Source, Walked};
 
-/// The keys the screen answers to, shown along its bottom row.
-const KEYS: &str = " j/k ↓/↑ move   tab pane   click select   drag copy   q quit";
+/// The keys the screen answers to, shown along its bottom row. The arrows
+/// that do what `l` and `h` do, and Enter, are left out: with them the row
+/// runs into "copied to clipboard" on a screen 100 columns wide.
+const KEYS: &str = " j/k ↓/↑ move   l/h open/close   tab pane   click select   drag copy   q quit";
 
 /// What the bottom row says after a drag is copied, at its right end, and for
 /// how long — herdr's words and herdr's two seconds.
@@ -39,6 +43,10 @@ pub struct App {
     sources: Vec<(Source, io::Result<Walked>)>,
     source: usize,
     entries: ListState,
+    /// The directories and Bundles whose rows are showing, by path. Kept apart
+    /// from what the Walk found, which the screen only reads, and by path, so
+    /// that a row is still open when its Source is looked at again.
+    open: HashSet<PathBuf>,
     focus: Pane,
     /// The Sources, Entries and Preview panes as last drawn.
     areas: [Rect; 3],
@@ -108,6 +116,57 @@ impl Selection {
     }
 }
 
+/// One row of the Entries pane: a row of the selected Source's tree, and how
+/// many levels down it sits.
+#[derive(Clone, Copy)]
+struct Row<'a> {
+    depth: usize,
+    node: &'a Node,
+}
+
+impl Row<'_> {
+    /// Whether there are rows below this one to show.
+    fn opens(&self) -> bool {
+        self.node.children().is_some_and(|rows| !rows.is_empty())
+    }
+
+    /// The row as the Entries pane draws it: indented by its depth, and marked
+    /// `▸` when it has rows to show, `▾` once they are showing. A link standing
+    /// in for a Bundle says so, since nothing below it was looked at. A name
+    /// comes out of somebody else's file, so it passes through `printable`, as
+    /// the listing's names do.
+    fn line(&self, open: &HashSet<PathBuf>) -> String {
+        let marker = match (self.opens(), open.contains(self.node.path())) {
+            (false, _) => " ",
+            (true, false) => "▸",
+            (true, true) => "▾",
+        };
+        let label = match self.node {
+            Node::Dir { path, .. } => {
+                format!("{}/", printable(&path.file_name().unwrap_or(path.as_os_str()).to_string_lossy()))
+            }
+            Node::Entry(Entry { name, kind: EntryKind::Bundle { inside: None, .. }, .. }) => {
+                format!("{} (link)", printable(name))
+            }
+            Node::Entry(entry) => printable(&entry.name),
+        };
+        format!("{}{marker} {label}", "  ".repeat(self.depth))
+    }
+}
+
+/// The rows a tree shows: every node at this level, and under each open one
+/// its own rows, a level deeper — in the order the Walk found them.
+fn visible<'a>(nodes: &'a [Node], depth: usize, open: &HashSet<PathBuf>, out: &mut Vec<Row<'a>>) {
+    for node in nodes {
+        out.push(Row { depth, node });
+        if let Some(children) = node.children() {
+            if open.contains(node.path()) {
+                visible(children, depth + 1, open, out);
+            }
+        }
+    }
+}
+
 /// The cell inside `area` nearest to `at`. `area` must not be empty.
 fn clamp(at: Position, area: Rect) -> Position {
     Position::new(
@@ -134,6 +193,7 @@ impl App {
             sources,
             source: 0,
             entries: ListState::default().with_selected(Some(0)),
+            open: HashSet::new(),
             focus: Pane::Sources,
             areas: [Rect::default(); 3],
             source_offset: 0,
@@ -165,8 +225,7 @@ impl App {
             self.focus = Pane::Entries;
             let Some(line) = row_in(entries, at) else { return };
             let index = self.entries.offset() + line;
-            let len = self.walked().map_or(0, |walked| walked.entries().len());
-            if index < len {
+            if index < self.rows().len() {
                 self.entries.select(Some(index));
             }
         } else if self.preview_inner().contains(at) {
@@ -263,7 +322,45 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => self.down(),
             KeyCode::Char('k') | KeyCode::Up => self.up(),
+            KeyCode::Char('l') | KeyCode::Right if self.focus == Pane::Entries => self.open_row(),
+            KeyCode::Char('h') | KeyCode::Left if self.focus == Pane::Entries => self.close_row(),
+            KeyCode::Enter if self.focus == Pane::Entries => self.toggle_row(),
             _ => {}
+        }
+    }
+
+    /// Show the rows below the selected one, if it has any.
+    fn open_row(&mut self) {
+        let Some(row) = self.row() else { return };
+        if row.opens() {
+            let path = row.node.path().to_path_buf();
+            self.open.insert(path);
+        }
+    }
+
+    /// Hide the rows below the selected one. On a row with nothing showing
+    /// below it, go up to the row it sits under instead.
+    fn close_row(&mut self) {
+        let rows = self.rows();
+        let Some(at) = self.entries.selected() else { return };
+        let Some(row) = rows.get(at) else { return };
+        if self.open.contains(row.node.path()) {
+            let path = row.node.path().to_path_buf();
+            self.open.remove(&path);
+        } else if let Some(parent) = rows[..at].iter().rposition(|r| r.depth + 1 == row.depth) {
+            self.entries.select(Some(parent));
+        }
+    }
+
+    /// Enter: open the selected row, or close it if it is open.
+    fn toggle_row(&mut self) {
+        let Some(row) = self.row() else { return };
+        if !row.opens() {
+            return;
+        }
+        let path = row.node.path().to_path_buf();
+        if !self.open.remove(&path) {
+            self.open.insert(path);
         }
     }
 
@@ -276,7 +373,7 @@ impl App {
                 }
             }
             Pane::Entries => {
-                let len = self.walked().map_or(0, |walked| walked.entries().len());
+                let len = self.rows().len();
                 let at = self.entries.selected().unwrap_or(0);
                 if at + 1 < len {
                     self.entries.select(Some(at + 1));
@@ -325,9 +422,26 @@ impl App {
         }
     }
 
-    /// The selected Entry, if there is one.
+    /// The selected Source's tree as the Entries pane shows it, row by row.
+    fn rows(&self) -> Vec<Row<'_>> {
+        let mut out = Vec::new();
+        if let Some(walked) = self.walked() {
+            visible(&walked.nodes, 0, &self.open, &mut out);
+        }
+        out
+    }
+
+    /// The selected row, if there is one.
+    fn row(&self) -> Option<Row<'_>> {
+        self.rows().get(self.entries.selected()?).copied()
+    }
+
+    /// The selected Entry: the selected row, unless that is a directory.
     fn entry(&self) -> Option<&Entry> {
-        self.walked()?.entries().get(self.entries.selected()?).copied()
+        match self.row()?.node {
+            Node::Entry(entry) => Some(entry),
+            Node::Dir { .. } => None,
+        }
     }
 
     /// The preview inside its border, as last drawn: where text can be dragged over.
@@ -394,17 +508,14 @@ impl App {
         self.source_offset = state.offset();
     }
 
-    /// The selected Source's Entries by name. Names come out of somebody else's
-    /// file, so they pass through `printable` as the listing's do: a `List`
-    /// hands a character that takes no room to the cell before it, where a
-    /// `Paragraph` would have dropped it.
+    /// The selected Source's tree, a line for each row showing. Names come out
+    /// of somebody else's file, so they pass through `printable` as the
+    /// listing's do: a `List` hands a character that takes no room to the cell
+    /// before it, where a `Paragraph` would have dropped it.
     fn render_entries(&mut self, frame: &mut Frame, area: Rect) {
-        let names: Vec<String> = match self.walked() {
-            Some(walked) => walked.entries().into_iter().map(|e| printable(&e.name)).collect(),
-            None => Vec::new(),
-        };
+        let lines: Vec<String> = self.rows().iter().map(|row| row.line(&self.open)).collect();
 
-        let list = List::new(names)
+        let list = List::new(lines)
             .block(Block::bordered().title("Entries").border_style(self.border(Pane::Entries)))
             .highlight_style(Style::new().reversed());
         frame.render_stateful_widget(list, area, &mut self.entries);
@@ -415,12 +526,13 @@ impl App {
     fn render_preview(&self, frame: &mut Frame, area: Rect) {
         let width = area.width.saturating_sub(2);
         let lines = match self.entry() {
-            None => Vec::new(),
             Some(entry) => match (&entry.text, entry.doc()) {
                 (Some(text), _) => markdown::render(text, width),
                 (None, None) => vec![Line::raw("(this Bundle has no SKILL.md)")],
                 (None, Some(_)) => vec![Line::raw("(the file could not be read)")],
             },
+            None if self.row().is_some() => vec![Line::raw("(a directory)")],
+            None => Vec::new(),
         };
 
         // The rows already fit. ratatui's wrapping stays as a net for a row
@@ -1100,5 +1212,159 @@ mod tests {
         assert!(rows.contains("[31mred leftrightgap"), "{rows}");
         assert!(!rows.chars().any(|c| c != '\n' && c.is_control()), "{rows:?}");
         assert!(!rows.contains(FORMAT), "{rows:?}");
+    }
+
+    // ----------------------------------------------------------------- tree
+    //
+    // `nested` is a docs tree one row wide at every level, so that the order
+    // `read_dir` gives — the platform's — cannot move a row:
+    //
+    //   guide/
+    //     deep/
+    //       end.md
+
+    fn nested(name: &str) -> App {
+        let dir = scratch(name);
+        write(&dir.join("guide").join("deep").join("end.md"), "# end\n");
+        let mut app = app(vec![Source::new("docs", dir, Scope::Project, Walk::MarkdownTree)]);
+        press(&mut app, &[KeyCode::Tab]);
+        app
+    }
+
+    /// The Entries pane's rows as drawn on a 100 x 12 screen — rows 1 to 9 and
+    /// columns 29 to 58, inside its border — down to the last one that holds
+    /// anything.
+    fn tree(app: &mut App) -> Vec<String> {
+        let rows: Vec<String> = screen(app, 100, 12)[1..10]
+            .iter()
+            .map(|r| r.chars().skip(29).take(30).collect::<String>().trim_end().to_string())
+            .collect();
+        let shown = rows.iter().rposition(|r| !r.is_empty()).map_or(0, |last| last + 1);
+        rows[..shown].to_vec()
+    }
+
+    #[test]
+    fn a_tree_starts_closed_and_l_opens_the_selected_row() {
+        let mut app = nested("tui-tree-open");
+        assert_eq!(tree(&mut app), ["▸ guide/"]);
+        press(&mut app, &[KeyCode::Char('l')]);
+        assert_eq!(tree(&mut app), ["▾ guide/", "  ▸ deep/"]);
+        press(&mut app, &[KeyCode::Char('j'), KeyCode::Right]);
+        assert_eq!(tree(&mut app), ["▾ guide/", "  ▾ deep/", "      end"]);
+    }
+
+    #[test]
+    fn h_closes_an_open_row_and_from_any_other_goes_up_to_its_parent() {
+        let mut app = nested("tui-tree-close");
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Char('j'), KeyCode::Char('l'), KeyCode::Char('j')]);
+        assert_eq!(app.entry().unwrap().name, "end");
+
+        // `end` has nothing below it: up to `deep/`, which is open, so closed.
+        press(&mut app, &[KeyCode::Char('h')]);
+        assert_eq!(app.entries.selected(), Some(1));
+        press(&mut app, &[KeyCode::Left]);
+        assert_eq!(tree(&mut app), ["▾ guide/", "  ▸ deep/"]);
+
+        // `deep/` is closed now: up to `guide/`, closed, and nothing is above it.
+        press(&mut app, &[KeyCode::Char('h')]);
+        assert_eq!(app.entries.selected(), Some(0));
+        press(&mut app, &[KeyCode::Char('h'), KeyCode::Char('h')]);
+        assert_eq!(tree(&mut app), ["▸ guide/"]);
+        assert_eq!(app.entries.selected(), Some(0));
+    }
+
+    #[test]
+    fn enter_opens_a_row_and_closes_it_again() {
+        let mut app = nested("tui-tree-enter");
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(tree(&mut app), ["▾ guide/", "  ▸ deep/"]);
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(tree(&mut app), ["▸ guide/"]);
+    }
+
+    #[test]
+    fn the_tree_keys_do_nothing_in_the_sources_pane() {
+        let mut app = nested("tui-tree-sources");
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('l'), KeyCode::Right, KeyCode::Enter]);
+        assert_eq!(tree(&mut app), ["▸ guide/"]);
+    }
+
+    #[test]
+    fn a_directory_row_says_so_in_the_preview() {
+        let mut app = nested("tui-tree-preview");
+        let rows = screen(&mut app, 100, 8).join("\n");
+        assert!(rows.contains("(a directory)"), "{rows}");
+    }
+
+    #[test]
+    fn a_click_selects_a_row_inside_an_open_directory() {
+        let mut app = nested("tui-tree-click");
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Char('j'), KeyCode::Char('l'), KeyCode::Char('k')]);
+        click(&mut app, 35, 3);
+        assert_eq!(app.entry().unwrap().name, "end");
+    }
+
+    #[test]
+    fn the_count_is_of_entries_however_many_rows_are_open() {
+        let mut app = nested("tui-tree-count");
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Char('j'), KeyCode::Char('l')]);
+        assert_eq!(tree(&mut app).len(), 3);
+        let rows = screen(&mut app, 100, 12).join("\n");
+        assert!(rows.contains("docs:1"), "{rows}");
+    }
+
+    #[test]
+    fn a_row_stays_open_while_another_source_is_looked_at() {
+        let dir = scratch("tui-tree-remember");
+        write(&dir.join("rules").join("one.md"), "# one\n");
+        write(&dir.join("docs").join("guide").join("end.md"), "# end\n");
+        let mut app = app(vec![
+            Source::new("rules", dir.join("rules"), Scope::Global, Walk::MarkdownFiles),
+            Source::new("docs", dir.join("docs"), Scope::Project, Walk::MarkdownTree),
+        ]);
+        press(&mut app, &[KeyCode::Char('j'), KeyCode::Tab, KeyCode::Char('l')]);
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('k'), KeyCode::Char('j'), KeyCode::Tab]);
+        assert_eq!(tree(&mut app), ["▾ guide/", "    end"]);
+    }
+
+    #[test]
+    fn a_bundle_opens_onto_its_supporting_files() {
+        let dir = scratch("tui-tree-bundle");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&dir.join("alpha").join("REFERENCE.md"), "# supporting\n");
+        let mut app = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
+        press(&mut app, &[KeyCode::Tab]);
+
+        assert_eq!(tree(&mut app), ["▸ alpha"]);
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Char('j')]);
+        assert_eq!(tree(&mut app), ["▾ alpha", "    REFERENCE"]);
+        assert_eq!(app.entry().unwrap().name, "REFERENCE");
+    }
+
+    #[test]
+    fn a_bundle_holding_only_its_lead_has_nothing_to_open() {
+        let dir = scratch("tui-tree-leadonly");
+        write(&dir.join("dream").join("SKILL.md"), "---\nname: dream\n---\n");
+        let mut app = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('l'), KeyCode::Enter]);
+        assert_eq!(tree(&mut app), ["  dream"]);
+    }
+
+    #[test]
+    fn a_bundle_reached_through_a_link_says_so_and_does_not_open() {
+        let dir = scratch("tui-tree-link");
+        let skills = dir.join("skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        write(&dir.join("target").join("SKILL.md"), "---\nname: linked\n---\nread through the link\n");
+        write(&dir.join("target").join("FORMAT.md"), "# supporting\n");
+        if !link_dir(&dir.join("target"), &skills.join("linked")) {
+            return;
+        }
+
+        let mut app = app(vec![Source::new("skills", skills, Scope::Global, Walk::BundleDirs)]);
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('l'), KeyCode::Enter]);
+        assert_eq!(tree(&mut app), ["  linked (link)"]);
+        let rows = screen(&mut app, 100, 12).join("\n");
+        assert!(rows.contains("read through the link"), "{rows}");
     }
 }

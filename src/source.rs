@@ -41,6 +41,10 @@ fn md_tree(dir: &Path) -> io::Result<Walked> {
         let Ok(ft) = item.file_type() else { out.unreadable += 1; continue };
         let path = item.path();
         if ft.is_dir() {
+            // A directory named with a leading dot is hidden by convention, and
+            // what a tool leaves in one — `.pytest_cache/README.md` — is not
+            // documentation. Passed over like a `.txt`, so not counted either.
+            if item.file_name().to_string_lossy().starts_with('.') { continue };
             match md_tree(&path) {
                 Ok(sub) => out.nest(path, sub),
                 Err(_) => out.unreadable += 1,
@@ -395,6 +399,19 @@ mod tests {
         // `text-only/` and `empty/` hold no Entry, so they are no row.
         let walked = md_tree(&dir).unwrap();
         assert_eq!(outline(&walked.nodes, 0), vec!["a", "sub/", "  b", "  deep/", "    c"]);
+    }
+
+    #[test]
+    fn a_tree_passes_over_a_hidden_directory_without_counting_it() {
+        // `session-retro/.pytest_cache/README.md` on this machine: the one
+        // Markdown file in a hidden directory anywhere in the corpus.
+        let dir = scratch("tree-hidden");
+        write(&dir.join("a.md"), "# a");
+        write(&dir.join(".pytest_cache").join("README.md"), "# generated");
+
+        let walked = md_tree(&dir).unwrap();
+        assert_eq!(outline(&walked.nodes, 0), vec!["a"]);
+        assert_eq!(walked.unreadable, 0);
     }
 
     #[test]

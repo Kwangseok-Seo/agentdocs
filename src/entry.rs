@@ -35,6 +35,27 @@ pub enum Node {
     Dir { path: PathBuf, children: Vec<Node> },
 }
 
+impl Node {
+    /// Where this row is on disk: the directory, or the Entry's own path.
+    pub fn path(&self) -> &Path {
+        match self {
+            Node::Entry(entry) => &entry.path,
+            Node::Dir { path, .. } => path,
+        }
+    }
+
+    /// The rows below this one: a directory's, or those of a Bundle that was
+    /// walked into. A file has none, and neither has a link standing in for a
+    /// Bundle — what is behind it was never asked.
+    pub fn children(&self) -> Option<&[Node]> {
+        match self {
+            Node::Dir { children, .. } => Some(children),
+            Node::Entry(Entry { kind: EntryKind::Bundle { inside: Some(rows), .. }, .. }) => Some(rows),
+            Node::Entry(_) => None,
+        }
+    }
+}
+
 impl Entry {
     /// The file whose frontmatter describes this Entry: the file itself, or the
     /// Bundle's Lead. A Bundle without a Lead has nothing to read.
