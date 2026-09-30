@@ -1,5 +1,6 @@
 mod entry;
 mod frontmatter;
+mod highlight;
 mod listing;
 mod markdown;
 mod source;

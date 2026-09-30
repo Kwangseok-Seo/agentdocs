@@ -14,5 +14,9 @@ categories = ["command-line-utilities", "text-processing"]
 base64 = "0.22"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.0"
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 unicode-segmentation = "1.13"
 unicode-width = "0.2"
+
+[profile.dev.package."*"]
+opt-level = 3

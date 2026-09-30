@@ -1,11 +1,14 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use pulldown_cmark::{Alignment, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
+use syntect::easy::HighlightLines;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
+
+use crate::highlight;
 
 /// The bullets of a list, then of a list inside it, then of any deeper one.
 const BULLETS: [&str; 3] = ["•", "◦", "▪"];
@@ -40,7 +43,7 @@ pub fn render(text: &str, width: u16) -> Vec<Line<'_>> {
         skip: 0,
         lists: Vec::new(),
         containers: Vec::new(),
-        code: false,
+        code: None,
         gapped: false,
         table: None,
     };
@@ -72,8 +75,8 @@ struct Renderer<'a> {
     /// The quotes and list items open here, outermost first. Each puts
     /// something in front of every row inside it.
     containers: Vec<Container>,
-    /// Whether the text arriving belongs to a code block.
-    code: bool,
+    /// The code block the text arriving belongs to, if it does.
+    code: Option<Code<'a>>,
     /// Whether the last row is a blank line kept from the file.
     gapped: bool,
     /// The table being read, drawn once all of it is known.
@@ -88,6 +91,17 @@ enum Container {
     /// Nothing in front of the first row, two spaces in front of the rest:
     /// a line of a table's block or of the frontmatter, wrapped.
     Hang,
+}
+
+/// A code block as it is read.
+struct Code<'a> {
+    /// What colours its lines, or `None` when its language is not known:
+    /// then the whole block is plain code.
+    highlighter: Option<HighlightLines<'static>>,
+    /// The line read so far. A line comes whole from the parser nearly always,
+    /// and is then still borrowed from the file; one that comes in pieces is
+    /// copied as the pieces are joined.
+    line: Cow<'a, str>,
 }
 
 /// A table as it is read: how each column is aligned, and its rows — the
@@ -160,17 +174,23 @@ impl<'a> Renderer<'a> {
                 self.containers.pop();
             }
 
-            Event::Start(Tag::CodeBlock(_)) => {
+            Event::Start(Tag::CodeBlock(kind)) => {
                 self.begin(range.start);
-                self.code = true;
+                // The language is the first word after the fence.
+                let highlighter = match kind {
+                    CodeBlockKind::Fenced(info) => info.split_whitespace().next().and_then(highlight::for_language),
+                    CodeBlockKind::Indented => None,
+                };
+                self.code = Some(Code { highlighter, line: Cow::Borrowed("") });
             }
             Event::End(TagEnd::CodeBlock) => {
-                if !self.current.is_empty() {
-                    self.finish_line();
+                // The last line has no break after it to end it.
+                if self.code.as_ref().is_some_and(|code| !code.line.is_empty()) {
+                    self.end_code_line();
                 }
-                self.code = false;
+                self.code = None;
             }
-            Event::Text(text) if self.code => self.code_text(text),
+            Event::Text(text) if self.code.is_some() => self.code_text(text),
 
             Event::Start(Tag::Table(alignments)) => {
                 self.begin(range.start);
@@ -268,23 +288,41 @@ impl<'a> Renderer<'a> {
     /// piece may begin with the break that ends the line before it. The
     /// parser has already taken the carriage returns out.
     fn code_text(&mut self, text: CowStr<'a>) {
-        let style = Style::new().fg(Color::Yellow);
         let text: Cow<'a, str> = text.into();
         let mut at = 0;
         while at < text.len() {
             let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-            let line = part(&text, at..end);
-            // A tab is a control character, which the screen drops: Go's
-            // indentation would vanish with it.
-            let line = if line.contains('\t') { Cow::Owned(line.replace('\t', "    ")) } else { line };
-            if !line.is_empty() {
-                self.current.push(Span::styled(line, style));
+            let Some(code) = &mut self.code else { return };
+            let piece = part(&text, at..end);
+            if code.line.is_empty() {
+                code.line = piece;
+            } else {
+                code.line.to_mut().push_str(&piece);
             }
             if end < text.len() {
-                self.finish_line();
+                self.end_code_line();
             }
             at = end + 1;
         }
+    }
+
+    /// The line of code read so far, coloured, as a row of its own.
+    fn end_code_line(&mut self) {
+        let Some(code) = &mut self.code else { return };
+        let line = std::mem::take(&mut code.line);
+        // A tab is a control character, which the screen drops: Go's
+        // indentation would vanish with it.
+        let line = if line.contains('\t') { Cow::Owned(line.replace('\t', "    ")) } else { line };
+        match code.highlighter.as_mut().and_then(|highlighter| highlight::line(highlighter, &line)) {
+            Some(pieces) => {
+                for (range, style) in pieces {
+                    self.current.push(Span::styled(part(&line, range), style));
+                }
+            }
+            None if !line.is_empty() => self.current.push(Span::styled(line, Style::new().fg(Color::Yellow))),
+            None => {}
+        }
+        self.finish_line();
     }
 
     /// The line built so far, cut into rows.
@@ -978,8 +1016,12 @@ mod tests {
     fn indentation_is_never_left_alone_on_a_row() {
         // Seen in cli-printing-press: moved down whole, the word left its
         // indentation alone on a row of spaces.
-        let text = "```go\n\trootCmd.Flags().BoolVar(&asJSON, x)\n```";
+        let text = "```\n\trootCmd.Flags().BoolVar(&asJSON, x)\n```";
         assert_eq!(narrow(text, 16), ["    rootCmd.Flag", "s().BoolVar(&asJ", "SON, x)"]);
+        // Coloured, the word is in many pieces, and a piece that does not fit
+        // moves down whole: the line is cut where its colours change.
+        let text = "```go\n\trootCmd.Flags().BoolVar(&asJSON, x)\n```";
+        assert_eq!(narrow(text, 16), ["    rootCmd.", "Flags().BoolVar(", "&asJSON, x)"]);
         // Indentation as wide as the row leaves no room after it.
         assert_eq!(narrow("```\n        \u{2514}\u{2500} x\n```", 8), ["\u{2514}\u{2500} x"]);
     }
@@ -994,6 +1036,53 @@ mod tests {
     #[test]
     fn a_code_block_in_a_list_item_stays_in_the_item() {
         assert_eq!(plain("- item\n\n  ```\n  code\n  ```"), ["• item", "", "  code"]);
+    }
+
+    #[test]
+    fn code_in_a_known_language_is_coloured_by_its_kind() {
+        let text = "```rust\nfn main() { let s = \"hi\"; 42 } // note\n```";
+        assert_eq!(plain(text), ["fn main() { let s = \"hi\"; 42 } // note"]);
+        assert_eq!(style_of(text, "fn").fg, Some(Color::Magenta));
+        assert_eq!(style_of(text, "main").fg, Some(Color::LightBlue));
+        assert_eq!(style_of(text, "hi").fg, Some(Color::Green));
+        assert_eq!(style_of(text, "42").fg, Some(Color::LightRed));
+        assert_eq!(style_of(text, "note").fg, Some(Color::DarkGray));
+        // What no kind is given to is in the colour of the text around it.
+        assert_eq!(style_of(text, "s").fg, None);
+        assert_eq!(style_of("```yaml\nname: x\n```", "name").fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn code_in_a_language_not_known_is_yellow() {
+        assert_eq!(style_of("```mermaid\ngraph TD\n```", "graph").fg, Some(Color::Yellow));
+        assert_eq!(style_of("    indented fn", "fn").fg, Some(Color::Yellow));
+        // Only the first word after the fence names the language.
+        assert_eq!(style_of("```rust ignore\nfn x\n```", "fn").fg, Some(Color::Magenta));
+    }
+
+    #[test]
+    fn what_a_line_leaves_open_colours_the_next() {
+        // A string the first line opens is still a string on the second.
+        let text = "```python\ns = \"\"\"one\ntwo\"\"\"\nx = 1\n```";
+        assert_eq!(plain(text), ["s = \"\"\"one", "two\"\"\"", "x = 1"]);
+        assert_eq!(style_of(text, "two").fg, Some(Color::Green));
+        // And the string ends where it closes.
+        assert_eq!(style_of(text, "x").fg, None);
+    }
+
+    #[test]
+    fn a_line_of_code_that_comes_in_pieces_is_coloured_whole() {
+        // A tab in a list item's indentation splits the line in two.
+        let text = "- item\n\n  ```go\n  x := 1\n\ty := 2\n  ```";
+        assert_eq!(plain(text), ["• item", "", "  x := 1", "    y := 2"]);
+        assert_eq!(style_of(text, "2").fg, Some(Color::LightRed));
+    }
+
+    #[test]
+    fn a_line_of_code_that_comes_whole_is_still_the_files() {
+        let text = "```rust\nfn main() {}\n```";
+        let rows = render(text, 80);
+        assert!(rows[0].spans.iter().all(|span| matches!(span.content, Cow::Borrowed(_))), "{rows:?}");
     }
 
     #[test]
