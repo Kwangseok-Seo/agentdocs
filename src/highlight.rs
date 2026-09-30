@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use ratatui::style::{Color, Style};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{self, StyleModifier, Theme, ThemeItem, ThemeSettings};
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{Scope, SyntaxSet};
 
 /// Every language syntect knows, read the first time a code block asks for
 /// one and kept until the program ends.
@@ -19,7 +19,7 @@ static THEME: LazyLock<Theme> = LazyLock::new(theme);
 /// matches a token wins. The colours are the terminal's own, so they follow
 /// its palette, light or dark. What no row matches is plain code, in the
 /// colour of the text around it.
-const COLOURS: [(&str, Color); 6] = [
+const COLOURS: [(&str, Color); 8] = [
     ("comment", Color::DarkGray),
     ("string", Color::Green),
     ("constant.numeric, constant.language, constant.character", Color::LightRed),
@@ -29,6 +29,9 @@ const COLOURS: [(&str, Color); 6] = [
         "entity.name.type, entity.name.struct, entity.name.enum, entity.name.trait, entity.name.class, support.type, support.class, entity.name.tag, markup.heading",
         Color::Cyan,
     ),
+    // The lines of a diff.
+    ("markup.inserted", Color::Green),
+    ("markup.deleted", Color::Red),
 ];
 
 /// `COLOURS` as syntect takes them. A syntect colour is red, green, blue
@@ -49,9 +52,16 @@ fn theme() -> Theme {
 }
 
 /// A highlighter for code written in `language`, or `None` when syntect
-/// knows no language by that name.
+/// knows no language by that name — or when the language is Markdown. A
+/// block of Markdown is shown as written, and coloured, its headings would
+/// look like those of the file around it; so it is left as code of no known
+/// language is. Markdown is told by the scope its syntaxes share, which
+/// covers every name syntect takes for them.
 pub fn for_language(language: &str) -> Option<HighlightLines<'static>> {
     let syntax = SYNTAXES.find_syntax_by_token(language)?;
+    if Scope::new("text.html.markdown").is_ok_and(|markdown| markdown.is_prefix_of(syntax.scope)) {
+        return None;
+    }
     Some(HighlightLines::new(syntax, &THEME))
 }
 

@@ -53,6 +53,13 @@ pub fn render(text: &str, width: u16) -> Vec<Line<'_>> {
     renderer.lines
 }
 
+/// A note of the screen's own, cut into rows no wider than `width` between
+/// its words, as a file's lines are. It is not Markdown: nothing in it is
+/// drawn as such.
+pub fn note<'a>(text: impl Into<Cow<'a, str>>, width: u16) -> Vec<Line<'a>> {
+    wrap(Vec::new(), Vec::new(), vec![Span::raw(text)], usize::from(width))
+}
+
 struct Renderer<'a> {
     /// The whole file, for the blocks shown as they are on disk.
     text: &'a str,
@@ -286,7 +293,9 @@ impl<'a> Renderer<'a> {
     /// Text inside a code block, as the file lays it out: every line break
     /// ends a row, and nothing is joined. A line may arrive in pieces, and a
     /// piece may begin with the break that ends the line before it. The
-    /// parser has already taken the carriage returns out.
+    /// parser has already taken the carriage returns out — and in doing so
+    /// hands each break over after its line, on its own, where nothing comes
+    /// before it to join.
     fn code_text(&mut self, text: CowStr<'a>) {
         let text: Cow<'a, str> = text.into();
         let mut at = 0;
@@ -296,7 +305,7 @@ impl<'a> Renderer<'a> {
             let piece = part(&text, at..end);
             if code.line.is_empty() {
                 code.line = piece;
-            } else {
+            } else if !piece.is_empty() {
                 code.line.to_mut().push_str(&piece);
             }
             if end < text.len() {
@@ -1061,6 +1070,24 @@ mod tests {
     }
 
     #[test]
+    fn markdown_shown_as_written_is_yellow_as_a_language_not_known() {
+        // Coloured, its headings would look like the file's own.
+        for language in ["markdown", "md", "MultiMarkdown"] {
+            let text = format!("# Real\n\n```{language}\n# Example\n```");
+            assert_eq!(style_of(&text, "Example").fg, Some(Color::Yellow), "{language}");
+            assert_eq!(style_of(&text, "Real").fg, Some(Color::Cyan), "{language}");
+        }
+    }
+
+    #[test]
+    fn a_diff_adds_in_green_and_takes_away_in_red() {
+        let text = "```diff\n-old\n+new\n same\n```";
+        assert_eq!(style_of(text, "old").fg, Some(Color::Red));
+        assert_eq!(style_of(text, "new").fg, Some(Color::Green));
+        assert_eq!(style_of(text, "same").fg, None);
+    }
+
+    #[test]
     fn what_a_line_leaves_open_colours_the_next() {
         // A string the first line opens is still a string on the second.
         let text = "```python\ns = \"\"\"one\ntwo\"\"\"\nx = 1\n```";
@@ -1080,9 +1107,12 @@ mod tests {
 
     #[test]
     fn a_line_of_code_that_comes_whole_is_still_the_files() {
-        let text = "```rust\nfn main() {}\n```";
-        let rows = render(text, 80);
-        assert!(rows[0].spans.iter().all(|span| matches!(span.content, Cow::Borrowed(_))), "{rows:?}");
+        // With CRLF, the parser hands each break over after its line, alone.
+        for text in ["```rust\nfn main() {}\n```", "```rust\r\nfn main() {}\r\n```\r\n"] {
+            let rows = render(text, 80);
+            assert_eq!(plain(text), ["fn main() {}"]);
+            assert!(rows[0].spans.iter().all(|span| matches!(span.content, Cow::Borrowed(_))), "{rows:?}");
+        }
     }
 
     #[test]

@@ -54,10 +54,16 @@ pub struct App {
     /// from what the Walk found, which the screen only reads, and by path, so
     /// that a row is still open when its Source is looked at again.
     open: HashSet<PathBuf>,
-    /// How far down each file's preview has been scrolled, in rows, by path:
-    /// kept as `open` is, so that a file is where it was left when it is
-    /// looked at again. Drawing holds it to the file's last row.
+    /// How far down each file's preview has been scrolled, in rows, by its
+    /// Entry's path: kept as `open` is, so that a file is where it was left
+    /// when it is looked at again. Drawing holds it to the file's last row.
+    /// A directory, or something that could not be read, shows a note and
+    /// not a file, and keeps no place: what could not be read inside a Bundle
+    /// that would not open has the Bundle's own path.
     scrolled: HashMap<PathBuf, usize>,
+    /// How far down the preview as last drawn could be scrolled: to the row
+    /// that puts its last row at the bottom.
+    furthest: usize,
     focus: Pane,
     /// The Sources, Entries and Preview panes as last drawn.
     areas: [Rect; 3],
@@ -238,6 +244,7 @@ impl App {
             entries: ListState::default().with_selected(Some(0)),
             open: HashSet::new(),
             scrolled: HashMap::new(),
+            furthest: 0,
             focus: Pane::Sources,
             areas: [Rect::default(); 3],
             source_offset: 0,
@@ -350,16 +357,17 @@ impl App {
 
     /// Which way the preview scrolls without a key or the wheel: while text is
     /// dragged over with the pointer above the preview, up a row; below it,
-    /// down one.
+    /// down one — unless it is already as far as it goes that way, when the
+    /// loop has nothing to wake up for.
     fn autoscroll(&self) -> Option<isize> {
         let selection = self.selection?;
         if selection.phase != Phase::Dragging {
             return None;
         }
         let inner = self.preview_inner();
-        if selection.pointer.y < inner.y {
+        if selection.pointer.y < inner.y && self.top() > 0 {
             Some(-1)
-        } else if selection.pointer.y >= inner.bottom() {
+        } else if selection.pointer.y >= inner.bottom() && self.top() < self.furthest {
             Some(1)
         } else {
             None
@@ -522,13 +530,13 @@ impl App {
         }
     }
 
-    /// Scroll the selected row's preview down by `rows`, or up when `rows` is
-    /// below zero. Up stops at the first row; how far down it may go depends
-    /// on how the file is cut into rows, which only drawing knows, so drawing
-    /// holds it there.
+    /// Scroll the selected Entry's preview down by `rows`, or up when `rows`
+    /// is below zero. Up stops at the first row; how far down it may go
+    /// depends on how the file is cut into rows, which only drawing knows, so
+    /// drawing holds it there.
     fn scroll(&mut self, rows: isize) {
-        let Some(row) = self.row() else { return };
-        let path = row.node.path().to_path_buf();
+        let Some(entry) = self.entry() else { return };
+        let path = entry.path.clone();
         let top = self.scrolled.entry(path).or_default();
         *top = top.saturating_add_signed(rows);
     }
@@ -542,7 +550,7 @@ impl App {
     /// far it really went, so between a drawing and the next key or scroll
     /// this is the row the preview was drawn from.
     fn top(&self) -> usize {
-        self.row().and_then(|row| self.scrolled.get(row.node.path())).copied().unwrap_or(0)
+        self.entry().and_then(|entry| self.scrolled.get(&entry.path)).copied().unwrap_or(0)
     }
 
     /// Another Source's Entries start from their first row, scrolled to the top.
@@ -673,14 +681,14 @@ impl App {
         match self.entry() {
             Some(entry) => match (&entry.text, entry.doc()) {
                 (Some(text), _) => markdown::render(text, width),
-                (None, None) => vec![Line::raw("(this Bundle has no SKILL.md)")],
-                (None, Some(_)) => vec![Line::raw("(the file could not be read)")],
+                (None, None) => markdown::note("(this Bundle has no SKILL.md)", width),
+                (None, Some(_)) => markdown::note("(the file could not be read)", width),
             },
             None => match self.row().map(|row| row.node) {
                 Some(Node::Unreadable { reason: why, .. }) => {
-                    vec![Line::raw(format!("(this could not be read: {})", reason(*why)))]
+                    markdown::note(format!("(this could not be read: {})", reason(*why)), width)
                 }
-                Some(_) => vec![Line::raw("(a directory)")],
+                Some(_) => markdown::note("(a directory)", width),
                 None => Vec::new(),
             },
         }
@@ -690,13 +698,14 @@ impl App {
     /// dragged-over text shown reversed. When the file has more rows than
     /// show, the title says which.
     ///
-    /// Each line is one row: the renderer cuts them to fit, and drawn across
-    /// this machine's 585 files at four widths none came out wider. So the
-    /// rows are drawn one to a line, and a selection's rows are the file's.
+    /// Each line is one row: the renderer cuts them to fit, notes as well as
+    /// files, and drawn across this machine's 585 files at four widths none
+    /// came out wider. So the rows are drawn one to a line, and a selection's
+    /// rows are the file's.
     fn render_preview(&mut self, frame: &mut Frame, area: Rect) {
         let inner = area.inner(Margin::new(1, 1));
         let height = usize::from(inner.height);
-        let path = self.row().map(|row| row.node.path().to_path_buf());
+        let path = self.entry().map(|entry| entry.path.clone());
         let mut lines = self.preview_lines(inner.width);
 
         // Scrolled no further than puts the last row at the bottom. What is
@@ -708,7 +717,8 @@ impl App {
         lines.drain(..top);
 
         let mut block = Block::bordered().title("Preview").border_style(self.border(Pane::Preview));
-        if rows > height {
+        // With no room inside, no row shows to be counted.
+        if height > 0 && rows > height {
             let shown = format!("{}-{}/{rows}", top + 1, (top + height).min(rows));
             block = block.title_top(Line::from(shown).right_aligned());
         }
@@ -716,6 +726,7 @@ impl App {
         if let Some(path) = path {
             self.scrolled.insert(path, top);
         }
+        self.furthest = most;
 
         let Some(selection) = &mut self.selection else { return };
         if selection.phase == Phase::Pressed || inner.is_empty() {
@@ -1180,11 +1191,14 @@ mod tests {
     fn page_down_and_page_up_scroll_a_preview_of_rows_from_any_pane() {
         let mut app = tall("tui-scroll-page");
         draw(&mut app, 100, 8);
-        press(&mut app, &[KeyCode::PageDown]);
-        assert!(app.focus == Pane::Sources);
-        assert_eq!(first_row(&mut app), "• 6");
-        press(&mut app, &[KeyCode::PageUp]);
-        assert_eq!(first_row(&mut app), "• 1");
+        for (n, pane) in [Pane::Sources, Pane::Entries, Pane::Preview].into_iter().enumerate() {
+            assert!(app.focus == pane);
+            press(&mut app, &[KeyCode::PageDown]);
+            assert_eq!(first_row(&mut app), "• 6", "pane {n}");
+            press(&mut app, &[KeyCode::PageUp]);
+            assert_eq!(first_row(&mut app), "• 1", "pane {n}");
+            press(&mut app, &[KeyCode::Tab]);
+        }
     }
 
     #[test]
@@ -1218,6 +1232,8 @@ mod tests {
     #[test]
     fn the_title_says_which_rows_show_only_when_not_all_of_them_do() {
         let mut app = tall("tui-scroll-title");
+        // Three rows high, the preview is two borders and nothing between.
+        assert!(!screen(&mut app, 100, 3)[0].contains('/'));
         assert!(screen(&mut app, 100, 8)[0].contains("1-5/12"));
         press(&mut app, &[KeyCode::PageDown]);
         assert!(screen(&mut app, 100, 8)[0].contains("6-10/12"));
@@ -1343,6 +1359,31 @@ mod tests {
         app.tick(start);
         assert_eq!(first_row(&mut app), "• 1");
         assert_eq!(app.wake_in(start), None);
+    }
+
+    #[test]
+    fn a_drag_held_past_an_end_the_preview_has_reached_wakes_nothing() {
+        let mut app = tall("tui-select-stuck");
+        let start = Instant::now();
+        draw(&mut app, 100, 8);
+
+        // Above a preview at its first row.
+        app.click(63, 3);
+        app.drag(61, 0);
+        draw(&mut app, 100, 8);
+        assert_eq!(app.wake_in(start), None);
+        // The drag still reaches the first row.
+        assert_eq!(reversed_rows(&mut app), [true, true, true, false, false]);
+
+        // Below one whose last row shows.
+        press(&mut app, &[KeyCode::PageDown, KeyCode::PageDown]);
+        draw(&mut app, 100, 8);
+        app.click(61, 1);
+        app.drag(70, 7);
+        draw(&mut app, 100, 8);
+        assert_eq!(app.wake_in(start), None);
+        app.tick(start);
+        assert_eq!(first_row(&mut app), "• 8");
     }
 
     #[test]
@@ -1625,6 +1666,17 @@ mod tests {
     }
 
     #[test]
+    fn a_note_in_the_preview_is_cut_into_rows_that_fit() {
+        // On a screen 80 wide, the preview has columns 61 to 78 inside.
+        let dir = scratch("tui-nolead-narrow");
+        std::fs::create_dir_all(dir.join("beta")).unwrap();
+        let mut app = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
+        let cells = draw(&mut app, 80, 8);
+        let row = |y: u16| (61..79).map(|x| cells[(x, y)].symbol()).collect::<String>().trim_end().to_string();
+        assert_eq!([row(1), row(2)], ["(this Bundle has", "no SKILL.md)"]);
+    }
+
+    #[test]
     fn a_wide_character_at_the_end_of_a_row_leaves_the_border_alone() {
         // Seen in M5 with ratatui's wrapping: 33 cells and a space, then a
         // word five cells wide ending in 한, in a preview 38 wide — 한 went
@@ -1802,6 +1854,31 @@ mod tests {
         // Nor do l and Enter on that row reach the Bundle.
         press(&mut app, &[KeyCode::Char('j'), KeyCode::Char('l'), KeyCode::Enter]);
         assert_eq!(tree(&mut app), ["▾ alpha", "    alpha (unreadable)"]);
+    }
+
+    #[test]
+    fn a_bundle_that_would_not_open_is_where_it_was_left_after_the_row_under_it() {
+        // That row has the Bundle's path too, and shows a note, not a file.
+        let dir = scratch("tui-tree-held-scroll");
+        let items: String = (1..=12).map(|n| format!("- {n}\n")).collect();
+        write(&dir.join("alpha").join("SKILL.md"), &format!("---\nname: alpha\n---\n{items}"));
+        write(&dir.join("alpha").join("REFERENCE.md"), "# supporting\n");
+        let Some(_held) = hold(&dir.join("alpha")) else { return };
+
+        let mut app = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
+        draw(&mut app, 100, 8);
+        press(&mut app, &[KeyCode::Tab, KeyCode::PageDown]);
+        assert_eq!(first_row(&mut app), "• 5");
+        press(&mut app, &[KeyCode::Char('l'), KeyCode::Char('j'), KeyCode::PageDown]);
+        assert_eq!(first_row(&mut app), "(this could not be read: unreadable)");
+        // A drag over the note is counted from where the note is drawn.
+        let note = drag_across(&mut app, (61, 1), (96, 1));
+        assert_eq!(note.as_deref(), Some("(this could not be read: unreadable)"));
+        // The click handed j and k to the preview; round to the Entries.
+        press(&mut app, &[KeyCode::Tab, KeyCode::Tab]);
+        assert!(app.focus == Pane::Entries);
+        press(&mut app, &[KeyCode::Char('k')]);
+        assert_eq!(first_row(&mut app), "• 5");
     }
 
     #[test]
