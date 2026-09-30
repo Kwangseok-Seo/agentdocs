@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::panic;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -12,6 +13,7 @@ use ratatui::crossterm::event::{
     MouseEventKind,
 };
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::layout::{Constraint, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
@@ -19,20 +21,23 @@ use ratatui::widgets::{Block, List, ListState, Paragraph, Widget};
 use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
+use crate::editor;
 use crate::entry::{Entry, EntryKind, Node};
 use crate::listing::{failed, heading, printable, reason};
 use crate::markdown;
 use crate::source::{Scope, Source, Walked};
 
 /// The keys the screen answers to, shown along its bottom row. The arrows
-/// that do what `l` and `h` do, and Enter, are left out: with them the row
-/// runs into "copied to clipboard" on a screen 100 columns wide.
-const KEYS: &str = " j/k ↓/↑ move   l/h open/close   tab pane   click select   drag copy   q quit";
+/// that do what `l` and `h` do, Enter, and clicking to select are left out:
+/// with them the row runs into a notice on a screen 100 columns wide.
+const KEYS: &str = " j/k ↓/↑ move   l/h open/close   tab pane   e edit   drag copy   q quit";
 
-/// What the bottom row says after a drag is copied, at its right end, and for
-/// how long — herdr's words and herdr's two seconds.
-const COPIED: &str = "copied to clipboard ";
-const COPIED_FOR: Duration = Duration::from_secs(2);
+/// What the bottom row says after a drag is copied — herdr's words.
+const COPIED: &str = "copied to clipboard";
+
+/// How long a notice stays at the right end of the bottom row — herdr's two
+/// seconds.
+const NOTICE_FOR: Duration = Duration::from_secs(2);
 
 /// How many rows one notch of the wheel scrolls the preview — herdr's default.
 const WHEEL_ROWS: isize = 3;
@@ -72,8 +77,16 @@ pub struct App {
     /// Text dragged over in the preview, from the moment the button goes down
     /// there until the next click or key.
     selection: Option<Selection>,
-    /// Until when the bottom row says that a drag was copied.
-    copied_until: Option<Instant>,
+    /// What the bottom row says at its right end, for a while.
+    notice: Option<Notice>,
+}
+
+/// A few words at the right end of the bottom row: that a drag was copied, or
+/// how the editor ended when it did not end well.
+struct Notice {
+    text: String,
+    colour: Color,
+    until: Instant,
 }
 
 /// The pane that j and k move in. In the preview they scroll.
@@ -249,7 +262,7 @@ impl App {
             areas: [Rect::default(); 3],
             source_offset: 0,
             selection: None,
-            copied_until: None,
+            notice: None,
         }
     }
 
@@ -334,16 +347,16 @@ impl App {
         self.selection = Some(selection);
 
         let text = Some(self.selected_text(selection)).filter(|text| !text.trim().is_empty())?;
-        self.copied_until = Some(now + COPIED_FOR);
+        self.notice = Some(Notice { text: COPIED.to_string(), colour: Color::Green, until: now + NOTICE_FOR });
         Some(text)
     }
 
-    /// Whatever has come due by `now`: "copied to clipboard" comes down once
-    /// its time is up, and a drag held above or below the preview scrolls it
-    /// a row toward the pointer, every `AUTOSCROLL_EVERY`.
+    /// Whatever has come due by `now`: a notice comes down once its time is
+    /// up, and a drag held above or below the preview scrolls it a row toward
+    /// the pointer, every `AUTOSCROLL_EVERY`.
     fn tick(&mut self, now: Instant) {
-        if self.copied_until.is_some_and(|until| now >= until) {
-            self.copied_until = None;
+        if self.notice.as_ref().is_some_and(|notice| now >= notice.until) {
+            self.notice = None;
         }
 
         let Some(rows) = self.autoscroll() else { return };
@@ -375,15 +388,15 @@ impl App {
     }
 
     /// How long the loop may wait for a key or the mouse before something
-    /// comes due: "copied to clipboard" coming down, or the next row of a
-    /// scroll toward the pointer. `None` when nothing will.
+    /// comes due: a notice coming down, or the next row of a scroll toward
+    /// the pointer. `None` when nothing will.
     fn wake_in(&self, now: Instant) -> Option<Duration> {
-        let copied = self.copied_until.map(|until| until.saturating_duration_since(now));
+        let notice = self.notice.as_ref().map(|notice| notice.until.saturating_duration_since(now));
         let scroll = self.autoscroll().map(|_| {
             let at = self.selection.and_then(|selection| selection.scroll_at);
             at.map_or(Duration::ZERO, |at| at.saturating_duration_since(now))
         });
-        [copied, scroll].into_iter().flatten().min()
+        [notice, scroll].into_iter().flatten().min()
     }
 
     /// The text under `selection`: one line per row, without the blanks that
@@ -491,6 +504,41 @@ impl App {
         if !self.open.remove(&path) {
             self.open.insert(path);
         }
+    }
+
+    /// The file `e` hands to the editor: the selected Entry's own, or its
+    /// Bundle's Lead. A directory, something that could not be read, and a
+    /// Bundle with no Lead have none.
+    fn editable(&self) -> Option<&Path> {
+        self.entry()?.doc()
+    }
+
+    /// The editor has finished, one way or another. Every Source is read
+    /// again, since the file may be shown by more than one — a linked Bundle
+    /// is — and when the editor did not end well, the bottom row says how.
+    fn edited(&mut self, ended: io::Result<ExitStatus>, now: Instant) {
+        self.reload();
+        let text = match ended {
+            Ok(status) if status.success() => return,
+            Ok(status) => format!("editor: {status}"),
+            Err(e) => format!("editor: {e}"),
+        };
+        self.notice = Some(Notice { text, colour: Color::Red, until: now + NOTICE_FOR });
+    }
+
+    /// Walk every Source again. Which rows are open and where each file was
+    /// scrolled to are kept by path, so they hold for whatever the Walk finds
+    /// now; the selected row is kept by its place, and moves up to the last
+    /// row when fewer are left.
+    fn reload(&mut self) {
+        for (src, walked) in &mut self.sources {
+            *walked = src.entries();
+        }
+        let last = self.rows().len().saturating_sub(1);
+        if self.entries.selected().is_some_and(|at| at > last) {
+            self.entries.select(Some(last));
+        }
+        self.selection = None;
     }
 
     /// One row down in the focused pane, staying put on the last row.
@@ -619,9 +667,9 @@ impl App {
         self.render_entries(frame, middle);
         self.render_preview(frame, right);
         frame.render_widget(KEYS, footer);
-        if self.copied_until.is_some() {
-            let copied = Line::from(COPIED).right_aligned().style(Style::new().fg(Color::Green));
-            frame.render_widget(copied, footer);
+        if let Some(notice) = &self.notice {
+            let line = Line::from(format!("{} ", notice.text)).right_aligned().style(Style::new().fg(notice.colour));
+            frame.render_widget(line, footer);
         }
     }
 
@@ -801,6 +849,26 @@ fn osc52(text: &str) -> String {
     format!("\x1b]52;c;{}\x07", STANDARD.encode(text))
 }
 
+/// Hand the terminal to the editor for `path`, wait until it is done, and
+/// take the terminal back. Only one program can own a terminal's modes at a
+/// time, so what `open` sets up is taken down first — mouse reporting before
+/// raw mode, as there — and set up again after, in the order `open` sets it
+/// up. The editor drew over the screen, so all of it is drawn afresh.
+///
+/// How the editor ended is handed back as it is, for the screen to report:
+/// failing to take the terminal back is the only error that ends the screen.
+fn edit(terminal: &mut DefaultTerminal, path: &Path) -> io::Result<io::Result<ExitStatus>> {
+    execute!(io::stdout(), DisableMouseCapture)?;
+    ratatui::try_restore()?;
+
+    let ended = editor::command(path).status();
+
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    terminal.clear()?;
+    Ok(ended)
+}
+
 /// Draw, wait for a key or the mouse, act on it — and again, until `q`.
 fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
     loop {
@@ -825,6 +893,13 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
                     return Ok(());
                 }
                 app.handle(key.code);
+                // The editor needs the terminal, which the App never touches.
+                if key.code == KeyCode::Char('e') {
+                    if let Some(path) = app.editable() {
+                        let ended = edit(terminal, path)?;
+                        app.edited(ended, Instant::now());
+                    }
+                }
             }
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => app.click(mouse.column, mouse.row),
@@ -988,9 +1063,10 @@ mod tests {
 
     #[test]
     fn the_keys_are_listed_along_the_bottom_row() {
+        // Written out, rather than compared with the `KEYS` that drew it.
         let mut app = three_rules("tui-keys");
         let rows = screen(&mut app, 100, 8);
-        assert!(rows[7].starts_with(KEYS), "{:?}", rows[7]);
+        assert_eq!(rows[7].trim_end(), " j/k ↓/↑ move   l/h open/close   tab pane   e edit   drag copy   q quit");
     }
 
     // ------------------------------------------------------------- clicking
@@ -1398,7 +1474,7 @@ mod tests {
         assert_eq!(app.wake_in(start), Some(AUTOSCROLL_EVERY));
         draw(&mut app, 100, 8);
         app.release(start);
-        assert_eq!(app.wake_in(start), Some(COPIED_FOR));
+        assert_eq!(app.wake_in(start), Some(NOTICE_FOR));
     }
 
     #[test]
@@ -1588,14 +1664,14 @@ mod tests {
 
         let row = bottom_row(&mut app);
         assert!(row.starts_with(KEYS), "{row:?}");
-        assert!(row.ends_with(COPIED), "{row:?}");
-        assert_eq!(app.wake_in(start), Some(COPIED_FOR));
+        assert!(row.ends_with("copied to clipboard "), "{row:?}");
+        assert_eq!(app.wake_in(start), Some(NOTICE_FOR));
 
-        app.tick(start + COPIED_FOR - Duration::from_millis(1));
-        assert!(bottom_row(&mut app).ends_with(COPIED));
-        app.tick(start + COPIED_FOR);
-        assert!(!bottom_row(&mut app).contains(COPIED.trim_end()));
-        assert_eq!(app.wake_in(start + COPIED_FOR), None);
+        app.tick(start + NOTICE_FOR - Duration::from_millis(1));
+        assert!(bottom_row(&mut app).ends_with("copied to clipboard "));
+        app.tick(start + NOTICE_FOR);
+        assert!(!bottom_row(&mut app).contains(COPIED));
+        assert_eq!(app.wake_in(start + NOTICE_FOR), None);
     }
 
     #[test]
@@ -1603,7 +1679,7 @@ mod tests {
         let mut app = alpha("tui-copied-not");
         drag_across(&mut app, (70, 4), (80, 4));
         drag_across(&mut app, (63, 1), (63, 1));
-        assert!(!bottom_row(&mut app).contains(COPIED.trim_end()));
+        assert!(!bottom_row(&mut app).contains(COPIED));
         assert_eq!(app.wake_in(Instant::now()), None);
     }
 
@@ -1611,6 +1687,134 @@ mod tests {
     fn osc52_carries_the_text_in_base64() {
         assert_eq!(osc52("hello"), "\x1b]52;c;aGVsbG8=\x07");
         assert_eq!(osc52("한글"), "\x1b]52;c;7ZWc6riA\x07");
+    }
+
+    // ----------------------------------------------------------- the editor
+    //
+    // Running it needs a terminal, so the loop does that; what the App decides
+    // before and after is tested here.
+
+    /// How a process that exited with `code` ended.
+    fn exit(code: u32) -> ExitStatus {
+        #[cfg(windows)]
+        let status = std::os::windows::process::ExitStatusExt::from_raw(code);
+        #[cfg(unix)]
+        let status = std::os::unix::process::ExitStatusExt::from_raw((code as i32) << 8);
+        status
+    }
+
+    #[test]
+    fn e_hands_over_a_files_own_path_and_a_bundles_lead() {
+        let dir = scratch("tui-edit-paths");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&dir.join("alpha").join("REFERENCE.md"), "# supporting\n");
+        let mut app = app(vec![Source::new("skills", dir.clone(), Scope::Global, Walk::BundleDirs)]);
+
+        assert_eq!(app.editable(), Some(dir.join("alpha").join("SKILL.md").as_path()));
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('l'), KeyCode::Char('j')]);
+        assert_eq!(app.editable(), Some(dir.join("alpha").join("REFERENCE.md").as_path()));
+    }
+
+    #[test]
+    fn e_has_nothing_to_hand_over_on_a_directory_or_a_bundle_without_a_lead() {
+        let docs = nested("tui-edit-dir");
+        assert_eq!(docs.editable(), None);
+
+        let dir = scratch("tui-edit-nolead");
+        std::fs::create_dir_all(dir.join("beta")).unwrap();
+        let skills = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
+        assert_eq!(skills.editable(), None);
+    }
+
+    #[test]
+    fn what_the_editor_wrote_shows_once_it_is_done() {
+        let dir = scratch("tui-edit-reload");
+        write(&dir.join("alpha.md"), "# before\n");
+        let mut app = app(vec![Source::new("rules", dir.clone(), Scope::Global, Walk::MarkdownFiles)]);
+        assert_eq!(first_row(&mut app), "# before");
+
+        write(&dir.join("alpha.md"), "# after\n");
+        assert_eq!(first_row(&mut app), "# before");
+        app.edited(Ok(exit(0)), Instant::now());
+        assert_eq!(first_row(&mut app), "# after");
+    }
+
+    #[test]
+    fn every_source_is_read_again_not_only_the_one_on_screen() {
+        // The same file, as two Sources see it — as a linked Bundle is seen.
+        let dir = scratch("tui-edit-both");
+        write(&dir.join("alpha.md"), "# before\n");
+        let mut app = app(vec![
+            Source::new("rules", dir.clone(), Scope::Global, Walk::MarkdownFiles),
+            Source::new("again", dir.clone(), Scope::Global, Walk::MarkdownFiles),
+        ]);
+        write(&dir.join("alpha.md"), "# after\n");
+        app.edited(Ok(exit(0)), Instant::now());
+        press(&mut app, &[KeyCode::Char('j')]);
+        assert_eq!(app.source, 1);
+        assert_eq!(first_row(&mut app), "# after");
+    }
+
+    #[test]
+    fn the_editor_leaves_open_rows_and_scrolled_files_as_they_were() {
+        let mut app = tall("tui-edit-kept");
+        draw(&mut app, 100, 8);
+        press(&mut app, &[KeyCode::Tab, KeyCode::PageDown]);
+        assert_eq!(first_row(&mut app), "• 6");
+        app.edited(Ok(exit(0)), Instant::now());
+        assert_eq!(first_row(&mut app), "• 6");
+
+        let mut app = nested("tui-edit-open");
+        press(&mut app, &[KeyCode::Char('l')]);
+        app.edited(Ok(exit(0)), Instant::now());
+        assert_eq!(tree(&mut app), ["▾ guide/", "  ▸ deep/"]);
+    }
+
+    #[test]
+    fn a_selected_row_that_is_gone_after_the_editor_moves_up_to_the_last_one() {
+        let dir = scratch("tui-edit-gone");
+        for rule in ["one", "two", "three"] {
+            write(&dir.join(format!("{rule}.md")), &format!("# {rule}\n"));
+        }
+        let mut app = app(vec![Source::new("rules", dir.clone(), Scope::Global, Walk::MarkdownFiles)]);
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('j'), KeyCode::Char('j')]);
+        assert_eq!(app.entries.selected(), Some(2));
+
+        for rule in ["one", "two", "three"] {
+            std::fs::remove_file(dir.join(format!("{rule}.md"))).unwrap();
+        }
+        write(&dir.join("only.md"), "# only\n");
+        app.edited(Ok(exit(0)), Instant::now());
+        assert_eq!(app.entries.selected(), Some(0));
+        assert_eq!(app.entry().unwrap().name, "only");
+    }
+
+    #[test]
+    fn an_editor_that_ended_badly_says_how_for_two_seconds() {
+        let mut app = alpha("tui-edit-failed");
+        let start = Instant::now();
+        app.edited(Ok(exit(1)), start);
+
+        let said = format!("editor: {} ", exit(1));
+        let cells = draw(&mut app, 100, 8);
+        let row = bottom_row(&mut app);
+        assert!(row.ends_with(&said), "{row:?}");
+        assert_eq!(cells[(99 - 1, 7)].fg, Color::Red);
+        assert_eq!(app.wake_in(start), Some(NOTICE_FOR));
+        app.tick(start + NOTICE_FOR);
+        assert!(!bottom_row(&mut app).contains("editor:"));
+
+        app.edited(Err(io::Error::from(io::ErrorKind::NotFound)), start);
+        let said = format!("editor: {} ", io::Error::from(io::ErrorKind::NotFound));
+        assert!(bottom_row(&mut app).ends_with(&said));
+    }
+
+    #[test]
+    fn an_editor_that_ended_well_says_nothing() {
+        let mut app = alpha("tui-edit-fine");
+        app.edited(Ok(exit(0)), Instant::now());
+        assert!(!bottom_row(&mut app).contains("editor:"));
+        assert_eq!(app.wake_in(Instant::now()), None);
     }
 
     // -------------------------------------------------------------- drawing

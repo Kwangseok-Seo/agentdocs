@@ -1,3 +1,4 @@
+mod editor;
 mod entry;
 mod frontmatter;
 mod highlight;
