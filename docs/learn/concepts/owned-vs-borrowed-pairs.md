@@ -89,6 +89,20 @@ span.content.clone() ─── another box with the same arrow in it: points at 
 
 `clone()` makes one more of what is inside. Inside `Borrowed` is an arrow, so the clone is another arrow to the same place — measured, `heading.clone()` pointed at the same address as `heading`, still `Borrowed`. Inside `Owned` are letters, so the clone copies them.
 
+### Copied only when it has to be: `to_mut`
+
+M8 colours a line of code once all of it has arrived, and the parser nearly always hands a line over whole — but not always: a tab in a list item's indentation splits it into `"  "` and `"y := 2\n"`. The line is gathered in a `Cow`:
+
+```rust
+if code.line.is_empty() {
+    code.line = piece;                    // the first piece: still an arrow into the file
+} else if !piece.is_empty() {
+    code.line.to_mut().push_str(&piece);  // a second: copied into a String, then added to
+}
+```
+
+`to_mut()` hands back something that can be changed. From `Owned` that is the `String` already there; from `Borrowed` it first copies the letters into a new `String` and turns the box into `Owned` — once, and whether or not anything is then added. Slice 3 had no `!piece.is_empty()`, and a file whose lines end in CRLF hands each line's break over on its own, after the line: an empty second piece, and a copy for nothing. Across this machine's 13,960 lines of code, 9,228 were copied that way, all in CRLF files — where a count made before the commit had said none, since it looked only for second pieces with something in them. Review found it. Now none is copied, and a test checks that a whole line is still `Borrowed` after colouring, with either line ending.
+
 ## Pitfalls hit
 
 **`Cow` took four wrong answers in a row**, each a different face of one question — what does this point at:

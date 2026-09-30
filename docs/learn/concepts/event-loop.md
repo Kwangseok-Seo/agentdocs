@@ -10,8 +10,8 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
         app.tick(Instant::now());
         terminal.draw(|frame| app.render(frame))?;
 
-        if let Some(left) = app.copied_left(Instant::now()) {
-            if !event::poll(left)? {
+        if let Some(wait) = app.wake_in(Instant::now()) {
+            if !event::poll(wait)? {
                 continue;
             }
         }
@@ -23,7 +23,7 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
                 }
                 app.handle(key.code);
             }
-            Event::Mouse(mouse) => match mouse.kind { /* click, drag, release */ },
+            Event::Mouse(mouse) => match mouse.kind { /* click, drag, release, wheel */ },
             _ => {}
         }
     }
@@ -36,7 +36,7 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
 
 ## State changes; drawing reads
 
-`App` holds what is selected and focused. The loop turns each event into a method call — `handle(key)`, `click(column, row)`, `drag`, `release` — and those are the only places the state changes. `render` only reads it, apart from noting where it drew each pane and what the screen held, which the mouse needs: a click at column 35 means nothing until you know which pane was drawn there. Because the loop itself decides nothing, every one of those methods can be tested with a terminal made of memory ([[testing]]).
+`App` holds what is selected and focused. The loop turns each event into a method call — `handle(key)`, `click(column, row)`, `drag`, `wheel`, `release` — and hands `tick` the time on every turn; those are the only places the state changes. `render` only reads it, apart from noting where it drew each pane, which the mouse needs — a click at column 35 means nothing until you know which pane was drawn there — and, since M8, writing back two things only drawing knows: how far down a file can scroll, and where a drag has got to when the text moved under a pointer that did not ([[state]]). Because the loop itself decides nothing, every one of those methods can be tested with a terminal made of memory ([[testing]]).
 
 ## The terminal has modes
 
@@ -50,13 +50,15 @@ crossterm reports a key going down and a key coming up as two events, `KeyEventK
 
 ## Mouse events
 
-With capture on, the terminal reports the button going down (`Down`), the pointer moving with it held (`Drag`, once per cell crossed), and the button coming up (`Up`). A click is `Down` followed by `Up` in the same cell; a selection is the cells between a `Down` and the last `Drag`. The wheel arrives as `ScrollUp`/`ScrollDown` and is ignored on purpose until the preview can scroll (M8).
+With capture on, the terminal reports the button going down (`Down`), the pointer moving with it held (`Drag`, once per cell crossed), and the button coming up (`Up`). A click is `Down` followed by `Up` in the same cell; a selection is the cells between a `Down` and the last `Drag`. The wheel arrives as `ScrollUp`/`ScrollDown`. Over the preview it scrolls three rows a notch, herdr's default; anywhere else it does nothing, since moving the selection with it surprised in M5 (below).
 
 Capture has a price: the terminal's own selection now works only while Shift is held, and it selects whole rows of the screen, straight across all three panes. That is what made a selection inside the preview worth building.
 
 ## Waking up without an event
 
-"copied to clipboard" has to disappear two seconds later even if nobody touches anything, and `read()` would wait forever. `event::poll(left)` waits **at most** `left`: `true` if an event came, `false` if the time ran out. While the notice shows, the loop polls for exactly the time it has left and, on `false`, goes round again — the `tick` at the top takes the notice down and the next draw shows the row without it.
+"copied to clipboard" has to disappear two seconds later even if nobody touches anything, and `read()` would wait forever. `event::poll(wait)` waits **at most** `wait`: `true` if an event came, `false` if the time ran out. While the notice shows, the loop polls for exactly the time it has left and, on `false`, goes round again — the `tick` at the top takes the notice down and the next draw shows the row without it.
+
+M8 gave the loop a second reason to wake: a drag held above or below the preview scrolls it a row every 30 ms, herdr's interval, with the mouse standing still. `wake_in` answers with whichever is due sooner, or `None` when nothing is, and a screen nobody touches still uses no CPU. *Nothing is due* includes a preview already as far as it goes: until review caught it, a drag held above a file's first row woke the loop every 30 ms to draw the same screen — 29 of 33 drawings a second with no wait between them. Drawing now notes how far the preview can go, for `autoscroll` to ask.
 
 ## Talking to the terminal directly: OSC 52
 
@@ -68,4 +70,4 @@ A few things a terminal can do are asked for by writing an escape sequence betwe
 
 ## Related
 
-[[drop-and-unwinding]] · [[testing]] · [[enums-and-data]] · [[external-crates]] · [[closures]]
+[[drop-and-unwinding]] · [[testing]] · [[enums-and-data]] · [[external-crates]] · [[closures]] · [[state]]

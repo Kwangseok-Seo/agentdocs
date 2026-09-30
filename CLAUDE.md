@@ -31,7 +31,7 @@ Goal 2 is the constraint that does not show up in the code. The workflow below e
 - **Source definitions are data**, not code branches — including *how* each source is walked. Today the table holds Claude Code paths only. See `docs/adr/0003-*.md`.
 - **Project root** is found by walking up for a marker, falling back to the current directory. See `docs/adr/0004-*.md`.
 - **TUI framework**: ratatui (+ crossterm backend).
-- **Markdown**: parsed by pulldown-cmark; drawn, and cut into rows that fit the preview, by our own renderer.
+- **Markdown**: parsed by pulldown-cmark; drawn, and cut into rows that fit the preview, by our own renderer. Code in a language syntect knows, Markdown aside, is coloured in the terminal's own palette.
 - **Screen or listing.** A bare `agentdocs` at a terminal opens the screen; words, or stdout that is not a terminal, print the listing. See `docs/adr/0008-*.md`. The core is still verified through the listing.
 
 ## Layout (grow it as needed — never pre-create empty directories)

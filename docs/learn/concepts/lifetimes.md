@@ -52,7 +52,7 @@ Every function in this codebase that returns a borrow, against the rules:
 | `Entry::doc(&self) -> Option<&Path>`, `Entry::supporting(&self) -> Vec<&Entry>` | `self` | 2 | the Entry |
 | `Node::path(&self) -> &Path`, `Node::children(&self) -> Option<&[Node]>` | `self` | 2 | the Node |
 | `Walked::entries(&self) -> Vec<&Entry>`, `Walked::unreadable(&self) -> Vec<(&Path, io::ErrorKind)>` | `self` | 2 | the Walked |
-| `App::walked(&self)`, `App::entry(&self)`, `App::rows(&self) -> Vec<Row<'_>>`, `App::row(&self)` | `self` | 2 | the App |
+| `App::walked(&self)`, `App::entry(&self)`, `App::rows(&self) -> Vec<Row<'_>>`, `App::row(&self)`, `App::preview_lines(&self, width: u16) -> Vec<Line<'_>>` | `self` | 2 | the App |
 | `names(walked: &Walked) -> Vec<&str>`, and in tests `inside(entry: &Entry)` and `hit(found: Option<Hit<'_>>)` | one | 2 | what was passed in |
 | `Entry::first_hit(&self, terms: &[String]) -> Option<Hit<'_>>`, `Entry::own_hit(&self, terms: &[String]) -> Option<(usize, &str)>` | `self`, `terms` | **3** | the Entry |
 | `gather<'a>`, `unread<'a>`, `visible<'a>` — they return nothing, and push borrows into an `out` argument | `'a`, declared on the function | none applies | named: the tree |
@@ -63,8 +63,11 @@ Every function in this codebase that returns a borrow, against the rules:
 | `Renderer::prefix(&self) -> (Vec<Span<'a>>, Vec<Span<'a>>)` | `self`, and the `'a` of `Renderer<'a>` | would be 3 | named: the file, not the Renderer |
 | `markdown::wrap<'a>`, `whole_words<'a>`, `Rows::new`, `Rows::finish` | `'a`, declared on the function or on `Rows<'a>` | none needed | named: the file |
 | `listing::reason(kind: io::ErrorKind) -> &'static str` | none | none applies | named: the binary |
+| `highlight::for_language(language: &str) -> Option<HighlightLines<'static>>` | `language` | would be 2 | named: the theme, a `static` |
 
 `prefix` shows what a rule would have done. Written `Vec<Span<'_>>`, rule 3 ties its rows to `&self`, and the Renderer is then still lent out when it adds those rows to its own `lines` — 7 errors, among them `E0502: cannot borrow self.lines as mutable because it is also borrowed as immutable`. Naming `'a` says the rows point into the file, which outlives the Renderer.
+
+`for_language` is the same case the other way round. Written `HighlightLines<'_>`, rule 2 ties the highlighter to `language` — the word after a code fence — when what it holds an arrow to is the theme. The function still builds; its caller does not, since the word goes at the end of the `match` arm that read it and the highlighter is kept for the whole block: `E0597: info does not live long enough`. `'static` names the theme, which is a `static` and lasts as long as the program ([[statics]]).
 
 `part` goes one step further. Its input carries two lifetimes — how long the `Cow` is lent for, and how long the text inside it lives — so no rule can choose, and the name ties the output to the text inside, which lets it outlive the `Cow` it was cut from. Why that holds for one variant and not the other is in [[owned-vs-borrowed-pairs]].
 
@@ -132,9 +135,18 @@ help: use `'_` for type paths
 
 M7 added two more such types, both small. A `Hit<'a>` is the line that made a search keep an Entry: the line is a slice of a file's text, and `within: Option<&'a Entry>` says which supporting file it came from. A `Row<'a>` is one row of the Entries pane: a depth and a `&'a Node`. The screen's rows copy nothing out of the tree — they point into it, are made for one frame, and are gone before the tree could change.
 
+M8's is a code block as the renderer reads it, and it holds two borrows of different lengths:
+
+```rust
+struct Code<'a> {
+    highlighter: Option<HighlightLines<'static>>,  // an arrow to the theme, which never goes
+    line: Cow<'a, str>,                            // the line so far, an arrow into the file
+}
+```
+
 ## `'static`, and which way a promise goes
 
-`'static` promises that a thing lasts until the program ends. Only what is compiled into the binary — a string literal — can keep that. A file's text is read at run time into an Entry's `String` and goes when the Entry goes. With `Renderer`'s `text` given `&'static str`:
+`'static` promises that a thing lasts until the program ends. Only what is compiled into the binary can keep that — a string literal, or a `static`, whose place exists from the start of the run to its end ([[statics]]). A file's text is read at run time into an Entry's `String` and goes when the Entry goes. With `Renderer`'s `text` given `&'static str`:
 
 ```
 error: lifetime may not live long enough
@@ -160,4 +172,4 @@ The other direction is free. The bar in front of a quote, `"│ "`, goes into a 
 
 ## Related
 
-[[borrowing]] · [[slices]] · [[owned-vs-borrowed-pairs]] · [[structs]] · [[drop-and-unwinding]] · [[recursive-data]]
+[[borrowing]] · [[slices]] · [[owned-vs-borrowed-pairs]] · [[structs]] · [[drop-and-unwinding]] · [[recursive-data]] · [[statics]]

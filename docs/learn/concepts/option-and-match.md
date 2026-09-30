@@ -54,6 +54,29 @@ A Bundle's `inside` is `Option<Vec<Node>>`, and its two empty values say differe
 
 `None` does not say the directory is empty. It says there is no result, because the question was never asked. The screen draws the first as `grill-with-docs (link)` and the second as plain `dream`, and neither opens. As a pattern, the empty case is `Some(rows) if rows.is_empty()`: `Some([])` is refused, since `[]` matches an array or a slice and this is a `Vec` — `E0529: expected an array or slice, found Vec<Node>`.
 
+## A question asked of what may not be there
+
+`is_some_and` and `is_none_or` put a yes-or-no question to what an `Option` holds. Their names are easy to read the wrong way; written out as the `match` each one stands for, the only difference is the answer written into the `None` arm:
+
+```rust
+// code.is_some_and(|c| !c.line.is_empty())   // code.is_none_or(|c| !c.line.is_empty())
+match code {                                  match code {
+    None => false,                                None => true,
+    Some(c) => !c.line.is_empty(),                Some(c) => !c.line.is_empty(),
+}                                             }
+```
+
+Run over the three states a code block can be in at its end:
+
+```
+code         is_some_and  is_none_or
+None         false        true
+Some("")     false        false
+Some("x")    true         true
+```
+
+`is_some_and` is *there is one, and it is so*; `is_none_or` is *there is none, or it is so*. The code uses both: the end of a code block asks `is_some_and` whether a line is left to finish, and `tick` asks whether the time to scroll has not come yet with `selection.scroll_at.is_some_and(|at| now < at)` — no time set means scroll now.
+
 ## `Result` has the same shape
 
 `Result<T, E>` is `Ok(value)` or `Err(error)`, and it opens exactly the same way — which is why learning `Option` first pays for both.
@@ -115,6 +138,12 @@ called `Result::unwrap()` on an `Err` value: Os { code: 3, kind: NotFound }
 ## Pitfalls hit — `None` read as "nothing in it"
 
 For a link standing in for a Bundle, `inside` was picked as `Some([])` four times across M7's slices 2 and 3, and a table, an execution trace and a drawing did not change the answer. A diagnostic question showed why: `None` was being read in its everyday sense, *there is nothing inside*. What settled it was the table above, put as a question of whether there is a result at all, followed by a prediction on the real screen — with the empty case written as the pattern for a link, `(link)` lands on `dream`, `get-api-docs` and `to-html` instead of `grill-with-docs`. That was answered right.
+
+## Pitfalls hit — `None` answering *no* to every question
+
+The same reading came back in M8. In slice 1, `Option<&String>` was read as a result that says yes or no, not as an arrow that may be missing. In slice 2, asked what `is_none_or(|at| now >= at)` gives for no time set, a time to come and a time gone, the answer was right for the two times and wrong for none — *false*; and the guard that has to scroll when no time is set was given `is_some_and`, which then never scrolls: four tests failed, the preview staying where it was — `• 1` where `• 2` was expected, `• 8` where `• 6` was. Asked why `is_none_or` had been picked before, the answer was that its name has *none* in it. A table of the three states did not settle it.
+
+The `match` each one stands for did, in slice 3. A diagnostic question asked only for the value of `None.is_none_or(…)` — *true* — and a review question over `None`, `Some(3)` and `Some(9)` was answered right. The wrong answer in that slice was to a question that asked whether a function *is called* when the value is true; it is, and returns at once, so the question had asked about an effect, not the value.
 
 ## Pitfalls hit — expecting `if let … else` to be checked (not settled)
 

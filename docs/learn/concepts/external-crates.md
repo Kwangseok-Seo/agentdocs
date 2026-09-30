@@ -42,6 +42,25 @@ Later crates cost nothing new. M5 added `base64` and `unicode-width` as direct d
 
 A crate's **features** are the other lever. M6's Markdown parser, pulldown-cmark, turns on by default `getopts`, the argument parser of its own command-line tool, and `html`, a writer this viewer never calls; with `default-features = false` it cost three compiled crates — itself, `unicase` and `memchr` — and parsed every one of this machine's 558 files, 6.1 MB, in 99 ms. `Cargo.lock` gained only two packages, 172 to 174: `memchr` was locked already, named by `regex`, `nom` and three others that nothing here compiles, and pulldown-cmark is the first dependency here that builds it. The two counts answer different questions — what the lock knows of, and what the compiler builds.
 
+M8's syntect is where the lever mattered most. By default it builds its regular expressions with Oniguruma, a library written in C — `Compiling onig_sys` compiles C code, and needs a C compiler on whatever machine builds agentdocs, which a release for several platforms (M11) would have to provide for each. Its features offer a regex engine written in Rust instead:
+
+```toml
+syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+```
+
+Both engines were built and timed on this machine's code blocks. Oniguruma was the faster, about twice: the heaviest file, 445 lines of code, took 13.5 ms against 28.4. The Rust engine was taken, for the build. It added 14 packages to `Cargo.lock`, 174 to 188, none of them a `-sys` crate. The binary grew from 1.0 MB to 3.46 MB, nearly all of it the language definitions — the themes syntect also ships, left out once the colours were our own, were 42 KB of it.
+
+## Profiles: how each crate is built
+
+A **profile** says how `cargo` builds: `dev` for `cargo build`, `cargo run` and `cargo test`, `release` for `--release`. `dev` does not optimise, and a regex engine that is not optimised is slow — the heaviest file took 358 ms to draw under `cargo run`, against 30 ms in a release build. A profile can be changed for other people's crates alone:
+
+```toml
+[profile.dev.package."*"]
+opt-level = 3
+```
+
+`"*"` is every package but this one. With it, the slowest file takes 53 ms under `cargo run` at the preview's width in a 120-column terminal, and 42 ms at width 20; before M8 coloured anything, the slowest took 48 and 65. agentdocs itself is still built for debugging, [[integer-overflow]] checks included. The price is paid once: each dependency is built optimised the first time, and kept.
+
 ## A crate's traits come with it
 
 Most of what a crate adds to types you already have arrives as trait methods, and those exist only where the trait is imported: `use std::io::IsTerminal;` for `stdout().is_terminal()`, `use base64::Engine;` for `STANDARD.encode(…)`. See [[traits]].
@@ -53,4 +72,4 @@ Most of what a crate adds to types you already have arrives as trait methods, an
 
 ## Related
 
-[[modules]] · [[traits]] · [[event-loop]]
+[[modules]] · [[traits]] · [[event-loop]] · [[statics]] · [[integer-overflow]]

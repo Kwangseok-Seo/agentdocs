@@ -78,6 +78,21 @@ Functions that take a closure name the weakest kind they can live with. `filter`
 
 `fs::metadata(&path).map(|m| m.is_dir())` in `bundle_dirs` hands a closure to `Result::map`, and `first_hit` hands one to `Option::map`. A closure is just a value you can pass; [[iterators]] are where it shows up most.
 
+## A function's name, without the parentheses
+
+Where a closure is taken, a named function can go instead, written without its parentheses:
+
+```rust
+static THEME: LazyLock<Theme> = LazyLock::new(theme);             // not theme()
+info.split_whitespace().next().and_then(highlight::for_language)   // not for_language(…)
+```
+
+`theme()` calls the function on that line and hands over what it returns. `theme` is the function itself, handed over for the receiver to call when it chooses — `LazyLock` the first time the theme is read, `and_then` only if there is a word to look up. `LazyLock::new(theme)` and `LazyLock::new(|| theme())` do the same thing.
+
+## Pitfalls hit
+
+- **Calling and handing over told apart by the parentheses (not settled).** In M8, `static START: Instant = Instant::now();` was picked as compiling and `static START: LazyLock<Instant> = LazyLock::new(Instant::now);` as not. The first calls `now` while the program is compiled, which cannot be done (E0015); the second hands `now` over, and compiles. See [[statics]].
+
 ## Related
 
-[[iterators]] · [[traits]] · [[borrowing]] · [[impl-and-methods]]
+[[iterators]] · [[traits]] · [[borrowing]] · [[impl-and-methods]] · [[statics]]

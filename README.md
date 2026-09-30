@@ -13,11 +13,11 @@ So this repository is not a finished codebase. It is a **record of something gro
 
 ## Status
 
-**M7 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries **as a tree**, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks, tables, and frontmatter without its fences. A skill **opens onto its supporting files**, and a project's `docs/` onto its directories. `j`/`k` or the arrows move, `l`/`h` open and close a row, `Tab` switches pane, a click selects, and **dragging across the preview copies the text** to the clipboard.
+**M8 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries **as a tree**, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks **coloured by their language**, tables, and frontmatter without its fences. A skill **opens onto its supporting files**, and a project's `docs/` onto its directories. `j`/`k` or the arrows move, `l`/`h` open and close a row, `Tab` goes round the panes, a click selects, **the wheel or Page Down scrolls the preview**, and **dragging across it copies the text** to the clipboard — held past its edge, the drag scrolls it and keeps selecting.
 
 ```
 $ cd ~/projects/cli-maker && agentdocs        # a 120 x 18 terminal; skills, session-retro opened, RULE-FORMAT selected
-┌Sources───────────────────┐┌Entries───────────────────────┐┌Preview───────────────────────────────────────────────────┐
+┌Sources───────────────────┐┌Entries───────────────────────┐┌Preview───────────────────────────────────────────1-15/155┐
 │GLOBAL                    ││  dream                       ││# 전역 rule 파일 포맷                                     │
 │  skills:6                ││  get-api-docs                ││                                                          │
 │  rules:14                ││  grill-with-docs (link)      ││~/.claude/rules/*.md 에 발행하는 상시 가드레일의 형태.    │
@@ -37,7 +37,7 @@ $ cd ~/projects/cli-maker && agentdocs        # a 120 x 18 terminal; skills, ses
  j/k ↓/↑ move   l/h open/close   tab pane   click select   drag copy   q quit
 ```
 
-Every row starts closed. `session-retro`'s own row shows its `SKILL.md`; the rows under it are what it carries besides. `grill-with-docs` is a link to a skill kept elsewhere, and says so, since what is behind a link is never walked into ([ADR-0007](docs/adr/0007-links-are-listed-not-followed.md)). The count beside a source stays the number of entries, however many rows are open — `docs:80` opens as two rows, `adr/` and `learn/`. In a terminal, headings are bold and cyan, and code yellow; a table that does not fit the preview becomes one block per row.
+Every row starts closed. `session-retro`'s own row shows its `SKILL.md`; the rows under it are what it carries besides. `grill-with-docs` is a link to a skill kept elsewhere, and says so, since what is behind a link is never walked into ([ADR-0007](docs/adr/0007-links-are-listed-not-followed.md)). The count beside a source stays the number of entries, however many rows are open — `docs:80` opens as two rows, `adr/` and `learn/`. In a terminal, headings are bold and cyan; code in a language the highlighter knows is coloured by kind — keywords, strings, comments, numbers, a diff's added and removed lines — in the terminal's own palette, and other code is yellow, as is Markdown shown as written, so that its headings are not taken for the file's own; a table that does not fit the preview becomes one block per row. Each file stays scrolled where it was left, and the title says which rows show.
 
 With words, or with its output going to a pipe or a file, it prints the **listing** instead — which is also what an AI agent running it from its own shell gets ([ADR-0008](docs/adr/0008-screen-for-a-bare-command-at-a-terminal.md)). The listing is where M1–M4 happened: the binary discovers its sources, walks each one by its own rule, reads a name and description out of each entry's frontmatter, **says what it could not read instead of reporting zero**, and **searches**.
 
@@ -139,7 +139,7 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 | **M5** ✅ | TUI skeleton — three panes, key and mouse navigation, drag to copy | external crates, **the event loop**, modules, `Drop` |
 | **M6** ✅ | Markdown rendering — headings, lists, quotes, code blocks, tables, frontmatter, wrapped by the renderer | **lifetimes**, slices, `Cow` |
 | **M7** ✅ | The tree — skills open onto their supporting files and `docs/` onto its directories; search reads supporting files; what cannot be read is a row | **recursive data structures**, `Box` and `Vec` |
-| **M8** | Code block highlighting + scrolling — the wheel scrolls the preview, a drag can select past the rows in view | `syntect`, state management |
+| **M8** ✅ | Code block highlighting + scrolling — the wheel scrolls the preview, a drag can select past the rows in view | `syntect`, state management |
 | **M9** | `$EDITOR` delegation + file watching | `std::process`, **threads & channels** |
 | **M10** | Config file (extra sources, ordering) | `serde`, TOML, `thiserror` |
 | **M11** | Distribution — multi-platform binaries, install scripts, CI | release profiles, cross-compilation |

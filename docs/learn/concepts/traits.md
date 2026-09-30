@@ -132,6 +132,18 @@ Position { x: 5, y: 1 } < Position { x: 3, y: 2 }   = false
 
 A drag's two ends have to be put in reading order — row first — so M5 compares `(a.y, a.x)` tuples instead of the positions. Tuples compare element by element in the order written, which puts the choice in the caller's hands.
 
+M8 keeps a drag's ends as cells of the text rather than of the screen, in a type of its own, and puts the choice in the declaration instead:
+
+```rust
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
+struct Spot {
+    row: usize,     // declared first, compared first
+    column: u16,
+}
+```
+
+`anchor <= head` now reads as a page does, with no tuple to build at each comparison.
+
 ## Pitfalls hit
 
 - **An empty `impl` block compiles, silently.** Deleting `Frontmatter::none()` left `impl Frontmatter { }` holding nothing but a blank line. The build reported no warning; it was found by reading the diff.

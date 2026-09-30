@@ -7,9 +7,9 @@ A wiki of the **Rust and tooling knowledge** accumulated while building agentdoc
 ## Concepts (`concepts/`)
 
 - [[ownership]] — one owner per value, move vs `Copy`, why the rule exists at all
-- [[borrowing]] — `&T` and `&mut T`, the three rules, the silent bug each one prevents, and a borrow that ends at its last use
-- [[owned-vs-borrowed-pairs]] — `String`/`&str`, `PathBuf`/`&Path`, why signatures borrow in and own out, and `Cow` — what `&` and `clone()` do to a box
-- [[option-and-match]] — `Option`, `match` exhaustiveness and the `if let` a new variant slips past, guard clauses, `None` against `Some` of nothing, and what `unwrap` throws away
+- [[borrowing]] — `&T` and `&mut T`, the three rules, the silent bug each one prevents, a borrow that ends at its last use, a call that lends what is left of its dot, and a compiler that reads the signature, not the body
+- [[owned-vs-borrowed-pairs]] — `String`/`&str`, `PathBuf`/`&Path`, why signatures borrow in and own out, and `Cow` — what `&` and `clone()` do to a box, and `to_mut`, which copies only when it has to
+- [[option-and-match]] — `Option`, `match` exhaustiveness and the `if let` a new variant slips past, guard clauses, `None` against `Some` of nothing, `is_some_and` and `is_none_or` written out as a `match`, and what `unwrap` throws away
 - [[paths]] — paths are not strings; `join`, `parent`, `extension`, `starts_with`, `display`
 - [[fs-read-dir]] — one level only, `Result` twice over, what `count()` really counts, recursion
 - [[macros-and-formatting]] — `println!` and why its first argument must be a literal
@@ -21,17 +21,21 @@ A wiki of the **Rust and tooling knowledge** accumulated while building agentdoc
 - [[str-scanning]] — `lines`, `split_once`, `peek`, why cutting by bytes is a lottery, and why a lowercase copy is not the same length
 - [[result-and-errors]] — `Result`, the four ways an error can end, `?` and why propagation is contagious
 - [[file-types-and-links]] — asking about the entry or about the target, and the two opposite bugs one boolean produced
-- [[testing]] — `#[cfg(test)]`, fixtures without a crate, a path held open so nothing can read it, and why a green suite proves nothing until you break the code
+- [[testing]] — `#[cfg(test)]`, fixtures without a crate, a path held open so nothing can read it, why a green suite proves nothing until you break the code, and a key whose new meaning disarms old tests
 - [[iterators]] — one required method and 75 free ones, adapters vs consumers, laziness, stopping early, `filter_map`
-- [[closures]] — functions that capture, the three ways they hold what they use, and `Fn` / `FnMut` / `FnOnce`
-- [[traits]] — promises with default bodies, `derive` as a compiler-written `impl`, bounds and `impl Trait`, why a trait's methods need the trait in scope, and a derived order
+- [[closures]] — functions that capture, the three ways they hold what they use, `Fn` / `FnMut` / `FnOnce`, and a function handed over by its name
+- [[traits]] — promises with default bodies, `derive` as a compiler-written `impl`, bounds and `impl Trait`, why a trait's methods need the trait in scope, and a derived order set by the order fields are declared
 - [[modules]] — a file is a module once declared, private until `pub` one wall at a time, `crate::` and `super::` paths
-- [[external-crates]] — crate vs package vs module, a version as a range, what `rust-version` holds back, and what one dependency costs
-- [[event-loop]] — draw everything, wait, change the state; raw mode, the alternate screen, mouse capture, and waking up without an event
+- [[external-crates]] — crate vs package vs module, a version as a range, what `rust-version` holds back, what one dependency costs, features that leave a C compiler out, and a profile for other people's crates
+- [[event-loop]] — draw everything, wait, change the state; raw mode, the alternate screen, mouse capture, the wheel, and waking up without an event
 - [[drop-and-unwinding]] — what runs when a value goes, what a panic skips, why the screen needs a hook, and `let _` vs `let _name`
 - [[lifetimes]] — how long a borrow is valid, the three elision rules checked against every function here, a borrow handed out through an argument, `<'a>` on a type, and which way `'static` fits
 - [[slices]] — a window of start and length, why a window shows one run only, ranges, and bytes vs characters vs columns
 - [[recursive-data]] — a type that holds itself, why that needs an arrow (E0072), `Box` for one and `Vec` for many, a level holding only the level below, and functions that call themselves
+- [[state]] — what the screen keeps and what it works out again: kept by what does not move, corrected by drawing, a moment as an `Option<Instant>`, and a highlighter's stack carried from line to line
+- [[hash-maps]] — `HashMap` and `HashSet`, keyed by path rather than row number, `entry().or_default()`, and what a key needs
+- [[integer-overflow]] — a panic in a debug build and a wrong number in a release one, and arithmetic that says which end it wants
+- [[statics]] — one value for the whole run, what the compiler can work out (E0015, E0010), `LazyLock` for the rest, and why the theme has to be one
 
 ## Milestones (`milestones/`)
 
@@ -45,3 +49,4 @@ The journey log: what was built, which concepts it required, and which pitfalls 
 - [M5](milestones/M5.md) — the screen
 - [M6](milestones/M6.md) — Markdown in the preview
 - [M7](milestones/M7.md) — the tree
+- [M8](milestones/M8.md) — scrolling, a selection past the rows in view, and code in colour
