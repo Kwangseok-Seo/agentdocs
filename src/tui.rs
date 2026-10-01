@@ -2270,6 +2270,31 @@ mod tests {
     }
 
     #[test]
+    fn a_change_behind_a_link_below_a_tree_is_not_heard() {
+        // A Walk does not go through a link (ADR-0007), and neither does the
+        // watching: on Linux notify would, unless told not to. Windows does
+        // not report there, told or not — this fails only where it can.
+        let dir = scratch("tui-watch-link-below");
+        let docs = dir.join("docs");
+        write(&docs.join("a.md"), "# a\n");
+        let elsewhere = dir.join("elsewhere");
+        write(&elsewhere.join("deep").join("x.md"), "# x\n");
+        if !link_dir(&elsewhere, &docs.join("outside")) {
+            return;
+        }
+        let app = app(vec![Source::new("docs", docs.clone(), Scope::Project, Walk::MarkdownTree)]);
+        let (to_loop, messages) = mpsc::channel();
+        let mut watcher = watcher(to_loop).unwrap();
+        let mut watching = Vec::new();
+        rewatch(&mut watcher, &mut watching, app.watched());
+
+        write(&elsewhere.join("deep").join("x.md"), "# changed\n");
+        assert!(!heard(&messages, Duration::from_millis(500)), "a change behind a link was heard");
+        write(&docs.join("a.md"), "# changed\n");
+        assert!(heard(&messages, ARRIVES), "the tree itself is not watched");
+    }
+
+    #[test]
     fn a_path_two_sources_watch_differently_is_watched_once_and_below() {
         // Found in review: watched alone and below at once, the one given up
         // took the other with it — a project whose root is a Bundle Source.
