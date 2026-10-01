@@ -50,6 +50,25 @@ jobs:
             exit 1
           fi
 
+  # What a release would put in every archive (docs/adr/0014), made on every
+  # push, so that a dependency whose licence cannot be read stops here and not
+  # at the release.
+  licences:
+    name: third-party licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: THIRD-PARTY-LICENSES.txt
+        run: sh .github/third-party-licenses.sh
+
   rust-version:
     name: test (rust-version)
     runs-on: ubuntu-latest

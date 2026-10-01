@@ -1,0 +1,64 @@
+# cargo-about's settings for THIRD-PARTY-LICENSES.txt, the licences of the
+# crates the release binaries are built from, which every release archive
+# carries (docs/adr/0014). `.github/third-party-licenses.sh` makes it, with
+# about.hbs.
+
+# The licences a crate may be under, and the order one is chosen in when a
+# crate offers several: MIT for `MIT OR Apache-2.0`. A crate under none of
+# these fails the script, in CI and in a release, to be looked at before its
+# licence is added here.
+accepted = ["MIT", "Apache-2.0", "ISC", "Zlib", "CC0-1.0", "Unicode-3.0"]
+
+# The release's five targets: a crate built for any of them is listed.
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Without these, each crate below is given the licence's standard text in
+# place of its own file — for MIT, "Copyright (c) <year> <copyright holders>".
+# The windows crates' file is `license-mit`, and ryu's `LICENSE-APACHE`, which
+# has no appendix; cargo-about uses neither unless it is named here. ratatui's
+# packages carry no licence file, and theirs is read from the repository at
+# the commit each was packaged from. A checksum that no longer matches is a
+# warning, which the script turns into a failure.
+[windows-sys.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-link.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows-targets.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[windows_x86_64_msvc.clarify]
+license = "MIT OR Apache-2.0"
+files = [{ path = "license-mit", license = "MIT", checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383" }]
+
+[ryu.clarify]
+license = "Apache-2.0 OR BSL-1.0"
+files = [{ path = "LICENSE-APACHE", license = "Apache-2.0", checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a" }]
+
+[ratatui.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", license = "MIT", checksum = "50eb43e8d742c9c61a9391e42b2184fce54dbd1893a1bb1c85b8c9ee217ab1f5" }]
+
+[ratatui-core.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", license = "MIT", checksum = "50eb43e8d742c9c61a9391e42b2184fce54dbd1893a1bb1c85b8c9ee217ab1f5" }]
+
+[ratatui-crossterm.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", license = "MIT", checksum = "50eb43e8d742c9c61a9391e42b2184fce54dbd1893a1bb1c85b8c9ee217ab1f5" }]
+
+[ratatui-widgets.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", license = "MIT", checksum = "50eb43e8d742c9c61a9391e42b2184fce54dbd1893a1bb1c85b8c9ee217ab1f5" }]
