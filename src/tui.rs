@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use notify::{RecursiveMode, Watcher};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
@@ -581,11 +581,18 @@ impl App {
     }
 
     /// Everything to watch for a change the screen would show, from every
-    /// Source, once each.
+    /// Source, each path once: notify keeps one watch to a path, so giving up
+    /// one of two would give up both. Watched below wins over watched alone.
     fn watched(&self) -> Vec<(PathBuf, bool)> {
         let mut all: Vec<_> = self.sources.iter().flat_map(|(src, walked)| src.watched(walked)).collect();
         all.sort();
-        all.dedup();
+        all.dedup_by(|later, kept| {
+            let same = later.0 == kept.0;
+            if same {
+                kept.1 |= later.1;
+            }
+            same
+        });
         all
     }
 
@@ -927,9 +934,9 @@ enum Message {
 /// Read the terminal with `read` on a thread of its own, one event at a time,
 /// and hand each to the loop. The next is not read until the loop says so on
 /// `go_on`: while the editor has the terminal, the loop does not, and every
-/// key is the editor's. A thread reading all the while left the editor with
-/// "hello" whole once in 10 tries, and five times took its `e`, which opened
-/// the editor a second time (M9).
+/// key is the editor's. A thread reading all the while left the editor
+/// "hello" whole in 5 of 20 tries, and in 7 took its `e`, which opened the
+/// editor a second time (M9).
 fn read_input(mut read: impl FnMut() -> io::Result<Event>, to_loop: Sender<Message>, go_on: Receiver<()>) {
     loop {
         if to_loop.send(Message::Input(read())).is_err() {
@@ -943,8 +950,8 @@ fn read_input(mut read: impl FnMut() -> io::Result<Event>, to_loop: Sender<Messa
 
 /// Watch what `wanted` names, below a path too where it says so, and stop
 /// watching what it no longer names. What cannot be watched — a link whose
-/// target is gone — is passed over, and not tried again until what is wanted
-/// changes.
+/// target is gone — is left out of `watching`, and so tried again each time
+/// round, until it can be or is no longer wanted.
 fn rewatch(watcher: &mut impl Watcher, watching: &mut Vec<(PathBuf, bool)>, wanted: Vec<(PathBuf, bool)>) {
     if *watching == wanted {
         return;
@@ -952,11 +959,38 @@ fn rewatch(watcher: &mut impl Watcher, watching: &mut Vec<(PathBuf, bool)>, want
     for (path, _) in watching.iter().filter(|w| !wanted.contains(w)) {
         let _ = watcher.unwatch(path);
     }
-    for (path, below) in wanted.iter().filter(|w| !watching.contains(w)) {
-        let mode = if *below { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
-        let _ = watcher.watch(path, mode);
+    let mut now = Vec::new();
+    for (path, below) in wanted {
+        let kept = watching.contains(&(path.clone(), below));
+        let mode = if below { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        if kept || watcher.watch(&path, mode).is_ok() {
+            now.push((path, below));
+        }
     }
-    *watching = wanted;
+    *watching = now;
+}
+
+/// A watcher that tells the loop over `to_loop` when a file may have changed.
+///
+/// A link is never walked into (ADR-0007), so it is not watched into either:
+/// on Linux and the BSDs notify would follow one below a directory it watches
+/// whole. The links a Walk reads through are watched by their own paths.
+fn watcher(to_loop: Sender<Message>) -> notify::Result<RecommendedWatcher> {
+    let config = notify::Config::default().with_follow_symlinks(false);
+    RecommendedWatcher::new(tell(to_loop), config)
+}
+
+/// What notify calls with each thing it reports: word to the loop of anything
+/// that could change what the screen shows — anything but a file being
+/// opened, read or closed. On Linux notify reports every open, the Walks' own
+/// among them, and taken for changes they would have the Sources read again
+/// for ever. A watch that failed may have missed something, so it counts.
+fn tell(to_loop: Sender<Message>) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
+    move |event| {
+        if !matches!(&event, Ok(e) if e.kind.is_access()) {
+            let _ = to_loop.send(Message::Changed);
+        }
+    }
 }
 
 /// Draw, wait for the terminal or a change, act on it — and again, until `q`.
@@ -971,10 +1005,7 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
     let input = to_loop.clone();
     thread::spawn(move || read_input(event::read, input, gone_on));
 
-    let mut watcher = notify::recommended_watcher(move |_| {
-        let _ = to_loop.send(Message::Changed);
-    })
-    .map_err(io::Error::other)?;
+    let mut watcher = watcher(to_loop).map_err(io::Error::other)?;
     let mut watching = Vec::new();
 
     loop {
@@ -2015,6 +2046,30 @@ mod tests {
         assert_eq!(reversed_rows(&mut app), [false; 5]);
     }
 
+    #[test]
+    fn a_file_opened_read_or_closed_has_not_changed() {
+        use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
+        use notify::{Error, Event as Notice, EventKind};
+
+        let (to_loop, messages) = mpsc::channel();
+        let mut told = tell(to_loop);
+        // Whether the loop hears of what notify reports.
+        let mut heard = |report: notify::Result<Notice>| {
+            told(report);
+            matches!(messages.try_recv(), Ok(Message::Changed))
+        };
+        let said = |kind| Ok(Notice::new(kind));
+
+        assert!(!heard(said(EventKind::Access(AccessKind::Open(AccessMode::Any)))));
+        assert!(!heard(said(EventKind::Access(AccessKind::Read))));
+        assert!(!heard(said(EventKind::Access(AccessKind::Close(AccessMode::Write)))));
+        assert!(heard(said(EventKind::Create(CreateKind::Any))));
+        assert!(heard(said(EventKind::Modify(ModifyKind::Any))));
+        assert!(heard(said(EventKind::Remove(RemoveKind::Any))));
+        assert!(heard(said(EventKind::Any)));
+        assert!(heard(Err(Error::generic("a watch was lost"))));
+    }
+
     /// Whether `messages` hears of a change: the first word of it, and then
     /// the rest of the same burst, so that the next change starts afresh.
     fn heard(messages: &Receiver<Message>, wait: Duration) -> bool {
@@ -2046,10 +2101,7 @@ mod tests {
             Source::new("missing", missing.clone(), Scope::Project, Walk::MarkdownFiles),
         ]);
         let (to_loop, messages) = mpsc::channel();
-        let mut watcher = notify::recommended_watcher(move |_| {
-            let _ = to_loop.send(Message::Changed);
-        })
-        .unwrap();
+        let mut watcher = watcher(to_loop).unwrap();
         let mut watching = Vec::new();
         rewatch(&mut watcher, &mut watching, app.watched());
 
@@ -2076,6 +2128,45 @@ mod tests {
         assert!(heard(&messages, ARRIVES), "a file in the directory that appeared changed unheard");
         write(&project.join("notes.md"), "# not in any Source\n");
         assert!(!heard(&messages, Duration::from_millis(500)), "the directory above is still watched");
+    }
+
+    #[test]
+    fn a_link_whose_target_comes_back_is_watched_from_then_on() {
+        // Found in review: the watch that failed was taken as made, and never
+        // tried again.
+        let dir = scratch("tui-watch-back");
+        let skills = dir.join("skills");
+        let target = dir.join("elsewhere").join("linked");
+        write(&skills.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&target.join("SKILL.md"), "---\nname: linked\n---\n");
+        if !link_dir(&target, &skills.join("linked")) {
+            return;
+        }
+        std::fs::remove_dir_all(&target).unwrap();
+        let app = app(vec![Source::new("skills", skills.clone(), Scope::Global, Walk::BundleDirs)]);
+        let (to_loop, messages) = mpsc::channel();
+        let mut watcher = watcher(to_loop).unwrap();
+        let mut watching = Vec::new();
+        rewatch(&mut watcher, &mut watching, app.watched());
+        assert_eq!(watching, [(skills.clone(), true)]);
+
+        write(&target.join("SKILL.md"), "---\nname: linked, back\n---\n");
+        rewatch(&mut watcher, &mut watching, app.watched());
+        write(&target.join("SKILL.md"), "---\nname: linked, changed\n---\n");
+        assert!(heard(&messages, ARRIVES), "a change behind a link that came back is unheard");
+    }
+
+    #[test]
+    fn a_path_two_sources_watch_differently_is_watched_once_and_below() {
+        // Found in review: watched alone and below at once, the one given up
+        // took the other with it — a project whose root is a Bundle Source.
+        let dir = scratch("tui-watch-twice");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        let app = app(vec![
+            Source::new("skills", dir.clone(), Scope::Global, Walk::BundleDirs),
+            Source::new("root md", dir.clone(), Scope::Project, Walk::MarkdownFiles),
+        ]);
+        assert_eq!(app.watched(), [(dir, true)]);
     }
 
     // -------------------------------------------------------------- drawing
