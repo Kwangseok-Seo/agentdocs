@@ -11,6 +11,7 @@ The same source compiled for another system is a program that meets another syst
 | `env::home_dir()` | reads `USERPROFILE` | reads `HOME` |
 | making a watcher | — | Linux: fails once the user holds the system's limit of inotify instances — 8192 in the container, of which a probe could take 8190 |
 | watching one more directory | — | Linux: refused once the user holds the system's limit of inotify watches. macOS watches through FSEvents, which was not tried at either limit |
+| a change made just before a watch begins | not reported | macOS: reported once the watch has begun — a directory and a file made, and the file written, came 5 ms in |
 
 ## The order a directory is read in
 
@@ -25,6 +26,7 @@ On Unix the current directory is reported with every link in it followed. With `
 - **A test that had only ever run on one file system.** `a_file_keeps_where_it_was_left_when_rows_open_above_it` opened `a/` above `long.md` — the first two rows on NTFS, not on ext4. Every other test of order already sorted what it compared, saying why; this one had nothing to sort, and read the screen.
 - **A fixture that made a different situation on each system.** On Windows a held directory cannot be listed, but its `SKILL.md` can still be read; with its permissions gone on Unix, it can be neither. Three Bundle tests that needed the Lead readable failed on Linux. The Unix hold now leaves a directory the one permission that lets a name inside it be looked up, which is the Windows situation; the situation Windows cannot make — a directory shut entirely — got a test of its own, and that test found the next item.
 - **A wrong answer only Unix could give.** `Path::is_file` answers `false` for a path it was not allowed to look at, just as for one that is not there. A Bundle whose directory was shut was listed as having no Lead, and its preview said `(this Bundle has no SKILL.md)`. `fs::metadata` keeps the error, and only `NotFound` means none; a Lead that could not be looked at is tried, and the row says `permission denied`.
+- **A test that waited for silence heard its own fixture, on macOS only.** Added after review, `a_watched_file_read_again_is_not_heard` wrote a file, began watching, read the file and expected to hear nothing; it passed on Windows and Linux and failed on macOS: "reading was heard as a change". Two explanations fitted — FSEvents reporting the read, which would have set off a Walk after every Walk, for ever; or reporting the fixture's write late. A probe on GitHub's macOS runner told them apart: reading, even when it moved the file's access time, was reported 0 times; the write made before the watch was reported 5 ms after it began. A test that waits for nothing to be heard now first waits until nothing has come for half a second.
 - **The reason a test expected was the platform's.** Tests wrote `unreadable`, Windows' word for a sharing violation; Unix's is `permission denied`. The fixture now tries the path as a Walk would, and hands the test the error it met.
 
 ## Related

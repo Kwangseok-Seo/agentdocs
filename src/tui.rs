@@ -2299,6 +2299,13 @@ mod tests {
         first
     }
 
+    /// Wait until nothing has come for half a second. macOS reports a file
+    /// written just before the watch began once it has begun, so a test that
+    /// waits for nothing to be heard first lets its own fixture be heard.
+    fn settled(messages: &Receiver<Message>) {
+        while messages.recv_timeout(Duration::from_millis(500)).is_ok() {}
+    }
+
     #[test]
     fn every_change_a_walk_would_show_is_heard() {
         let dir = scratch("tui-watch-heard");
@@ -2390,6 +2397,7 @@ mod tests {
         let mut watcher = watcher(to_loop).unwrap();
         let mut watching = Vec::new();
         rewatch(&mut watcher, &mut watching, app.watched());
+        settled(&messages);
 
         app.reload();
         assert!(!heard(&messages, Duration::from_millis(500)), "reading was heard as a change");
@@ -2415,6 +2423,7 @@ mod tests {
         let mut watcher = watcher(to_loop).unwrap();
         let mut watching = Vec::new();
         rewatch(&mut watcher, &mut watching, app.watched());
+        settled(&messages);
 
         write(&elsewhere.join("deep").join("x.md"), "# changed\n");
         assert!(!heard(&messages, Duration::from_millis(500)), "a change behind a link was heard");
