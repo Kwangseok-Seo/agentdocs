@@ -12,8 +12,8 @@ A **profile** is how `cargo` builds, and `release` is the one `--release` uses �
 | `strip = true` | 3.93 MB | 4.44 MB | 11.8 s | 33.3 ms |
 | `lto = "thin"`, stripped | 4.03 MB | | 13.2 s | 35.2 ms |
 | `lto = "fat"`, `codegen-units = 1`, stripped | 3.60 MB | 3.83 MB | 40.0 s | 33.8 ms |
-| that, and `opt-level = "s"` | 2.91 MB | | 38.8 s | 63.0 ms |
-| that, and `panic = "abort"` | 3.04 MB | 3.66 MB | 42.0 s | 33.8 ms |
+| the fourth row, and `opt-level = "s"` | 2.91 MB | | 38.8 s | 63.0 ms |
+| the fourth row, and `panic = "abort"` | 3.04 MB | 3.66 MB | 42.0 s | 33.8 ms |
 
 The search is the binary run in `cli-maker` with `검증`, the median of five. Reading the files is most of it, which is why only one setting moved it.
 

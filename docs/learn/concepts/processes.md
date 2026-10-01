@@ -61,7 +61,7 @@ const FALLBACK: &str = "vi";
 fn through_sh(editor: &OsStr, path: &Path) -> Command { … }
 ```
 
-`#[cfg(…)]` keeps an item, or a statement, only where its condition holds; elsewhere it is not compiled at all, and the compiler checks nothing in it. `through_sh` is compiled everywhere but Windows — and on Windows for the tests, which run it with Git's `sh`. That is also all it has been run with: no Unix machine was at hand in M9.
+`#[cfg(…)]` keeps an item, or a statement, only where its condition holds; elsewhere it is not compiled at all, and the compiler checks nothing in it. `through_sh` is compiled everywhere but Windows — and on Windows for the tests, which run it with Git's `sh`. That was all it had been run with in M9, when no Unix machine was at hand; since M11 its test runs on Linux and macOS too ([[continuous-integration]]).
 
 ## The terminal belongs to one program at a time
 

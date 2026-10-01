@@ -199,6 +199,8 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 
 ## Install
 
+> No release has been published yet. The first, v0.1.0, comes once this repository is public; until then, `cargo install` below is the way in.
+
 Each release has a binary for Linux (x86_64 and ARM, built static, so any distribution will do), macOS (Apple silicon and Intel) and Windows (x86_64), and two scripts that pick the right one, check it against the release's `SHA256SUMS`, and put it where your user can run it without an administrator ([ADR-0013](docs/adr/0013-releases-come-from-a-tag-and-the-installers-are-tried-first.md)).
 
 Linux and macOS, to `~/.local/bin`:

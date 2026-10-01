@@ -9,7 +9,8 @@ The same source compiled for another system is a program that meets another syst
 | a directory that will not be listed | the files in it can still be opened by name | without its search permission, they cannot even be looked up |
 | `env::current_dir()` | the path as it was given | every link in it resolved |
 | `env::home_dir()` | reads `USERPROFILE` | reads `HOME` |
-| making a watcher | — | fails once the user holds the system's limit of inotify instances, 8192 in the container |
+| making a watcher | — | Linux: fails once the user holds the system's limit of inotify instances — 8192 in the container, of which a probe could take 8190 |
+| watching one more directory | — | Linux: refused once the user holds the system's limit of inotify watches. macOS watches through FSEvents, which was not tried at either limit |
 
 ## The order a directory is read in
 

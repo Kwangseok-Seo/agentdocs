@@ -45,7 +45,7 @@ build (×5 targets) ──▶ assemble ──▶ try-installers (×3 systems) �
 
 ## What a run costs
 
-On a private repository GitHub counts minutes, and a minute on Windows as two, on macOS as ten. One `ci.yml` run came to about 45 counted minutes; a release run, with two macOS builds and a macOS installer run, more. On a public repository none of it is counted.
+On a private repository GitHub counts minutes, and a minute on Windows as two, on macOS as ten. GitHub rounds each job up to the minute, so the first `ci.yml` run came to 46 counted minutes; a release run, with two macOS builds and a macOS installer run, more. On a public repository none of it is counted.
 
 ## Pitfalls hit
 
