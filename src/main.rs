@@ -11,6 +11,7 @@ mod tui;
 mod testutil;
 
 use std::env;
+use std::fs;
 use std::io::{self, IsTerminal, Write};
 
 use crate::config::Problem;
@@ -32,11 +33,43 @@ fn search_terms(args: impl Iterator<Item = String>) -> Vec<String> {
         .collect()
 }
 
+/// What `--help` or `--version` asks to be printed, if any argument is one of
+/// them or their short forms: a binary handed to people has to say what it is
+/// and what it takes, and these four are not words anyone searches for. Help
+/// names the version too, so it wins when both are asked.
+fn asked_for(args: &[String]) -> Option<String> {
+    let asked = |flags: [&str; 2]| args.iter().skip(1).any(|a| flags.contains(&a.as_str()));
+    let version = format!("agentdocs {}", env!("CARGO_PKG_VERSION"));
+    if asked(["--help", "-h"]) {
+        Some(format!("{version} — {}\n\n{HELP}{}", env!("CARGO_PKG_DESCRIPTION"), env!("CARGO_PKG_REPOSITORY")))
+    } else if asked(["--version", "-V"]) {
+        Some(version)
+    } else {
+        None
+    }
+}
+
+const HELP: &str = "\
+Usage:
+  agentdocs              open the screen, at a terminal
+  agentdocs WORD...      list the entries that hold every word
+  agentdocs | more       the listing without words: output to a pipe or a file
+
+Sources of your own go in .agentdocs.toml, in your home directory for the
+global ones and at a project's root for that project's.
+
+";
+
 fn main() -> io::Result<()> {
+    let args: Vec<String> = env::args().collect();
+    if let Some(text) = asked_for(&args) {
+        return print_text(&mut io::stdout().lock(), &text);
+    }
+
     let home = env::home_dir();
     let cwd = env::current_dir().ok();
 
-    let terms = search_terms(env::args());
+    let terms = search_terms(args.into_iter());
 
     let mut sources = Vec::new();
     let mut problems = Vec::new();
@@ -54,8 +87,12 @@ fn main() -> io::Result<()> {
         sources.append(&mut global);
     }
 
+    // Unix gives the current directory with every link resolved, so below a
+    // home written through one — FreeBSD's /home is a link — it would never be
+    // below home: the home it resolves to is asked too.
     let root = match (&cwd, &home) {
-        (Some(cwd), Some(home)) => find_project_root(cwd, home),
+        (Some(cwd), Some(home)) => find_project_root(cwd, home)
+            .or_else(|| fs::canonicalize(home).ok().and_then(|real| find_project_root(cwd, &real))),
         _ => None,
     };
 
@@ -108,7 +145,16 @@ fn print_listing(
     problems: &[(Scope, Problem)],
     terms: &[String],
 ) -> io::Result<()> {
-    match write_listing(out, global, project, sources, problems, terms) {
+    stopped_early_is_done(write_listing(out, global, project, sources, problems, terms))
+}
+
+/// Print `text` and a line break, as the listing is printed.
+fn print_text(out: &mut impl Write, text: &str) -> io::Result<()> {
+    stopped_early_is_done(writeln!(out, "{text}").and_then(|()| out.flush()))
+}
+
+fn stopped_early_is_done(written: io::Result<()>) -> io::Result<()> {
+    match written {
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         other => other,
     }
@@ -203,6 +249,32 @@ mod tests {
     #[test]
     fn a_quoted_phrase_stays_one_term() {
         assert_eq!(search_terms(args(&["agentdocs", "Error Handling"])), vec!["error handling"]);
+    }
+
+    // --------------------------------------------------------------- asked_for
+
+    fn asked(list: &[&str]) -> Option<String> {
+        asked_for(&args(list).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn version_and_help_are_printed_rather_than_searched_for() {
+        let version = asked(&["agentdocs", "--version"]).unwrap();
+        assert_eq!(version, format!("agentdocs {}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(asked(&["agentdocs", "-V"]), Some(version.clone()));
+
+        let help = asked(&["agentdocs", "adr", "-h"]).unwrap();
+        assert!(help.starts_with(&format!("{version} — ")) && help.contains("Usage:"), "{help}");
+        assert_eq!(asked(&["agentdocs", "--help"]), Some(help.clone()));
+        assert_eq!(asked(&["agentdocs", "--version", "--help"]), Some(help));
+    }
+
+    #[test]
+    fn any_other_word_is_searched_for_dashes_and_all() {
+        // `code --wait` is in the docs here, and someone may look for it.
+        assert_eq!(asked(&["agentdocs", "--wait"]), None);
+        assert_eq!(asked(&["agentdocs", "-v", "help"]), None);
+        assert_eq!(asked(&["agentdocs"]), None);
     }
 
     #[test]
