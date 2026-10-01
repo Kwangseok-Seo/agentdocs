@@ -39,6 +39,11 @@ const KEYS: &str = " j/k ↓/↑ move   l/h open/close   tab pane   e edit   dra
 /// What the bottom row says after a drag is copied — herdr's words.
 const COPIED: &str = "copied to clipboard";
 
+/// What the bottom row says, whenever nothing else is said there, when the
+/// screen could not set up watching: what changes on disk is not shown
+/// until the next start.
+const UNWATCHED: &str = "not watching for changes";
+
 /// How long a notice stays at the right end of the bottom row — herdr's two
 /// seconds.
 const NOTICE_FOR: Duration = Duration::from_secs(2);
@@ -97,6 +102,8 @@ pub struct App {
     /// When the Sources are next read again, once a file has been seen to
     /// change.
     reload_at: Option<Instant>,
+    /// Whether changes on disk are heard: not when no watcher could be made.
+    watching: bool,
 }
 
 /// A few words at the right end of the bottom row: that a drag was copied, or
@@ -283,6 +290,7 @@ impl App {
             selection: None,
             notice: None,
             reload_at: None,
+            watching: true,
         }
     }
 
@@ -558,6 +566,12 @@ impl App {
         self.reload_at.get_or_insert(now + SETTLE);
     }
 
+    /// No watcher could be made: the screen works as it did before M9, and
+    /// says so for as long as it is open.
+    fn unwatched(&mut self) {
+        self.watching = false;
+    }
+
     /// Walk every Source again, and take what a Walk finds where it differs
     /// from what the screen has. Which rows are open and where each file was
     /// scrolled to are kept by path, so they hold for whatever the Walk finds
@@ -732,8 +746,13 @@ impl App {
         self.render_entries(frame, middle);
         self.render_preview(frame, right);
         frame.render_widget(KEYS, footer);
-        if let Some(notice) = &self.notice {
-            let line = Line::from(format!("{} ", notice.text)).right_aligned().style(Style::new().fg(notice.colour));
+        let said = match &self.notice {
+            Some(notice) => Some((notice.text.as_str(), notice.colour)),
+            None if !self.watching => Some((UNWATCHED, Color::Yellow)),
+            None => None,
+        };
+        if let Some((text, colour)) = said {
+            let line = Line::from(format!("{text} ")).right_aligned().style(Style::new().fg(colour));
             frame.render_widget(line, footer);
         }
     }
@@ -1054,11 +1073,22 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
     let input = to_loop.clone();
     thread::spawn(move || read_input(event::read, input, gone_on));
 
-    let mut watcher = watcher(to_loop).map_err(io::Error::other)?;
+    // A watcher that cannot be made — on Linux, once the system's limit on
+    // them is reached — leaves the screen as it was before M9, which says so,
+    // rather than no screen at all.
+    let mut watcher = match watcher(to_loop) {
+        Ok(watcher) => Some(watcher),
+        Err(_) => {
+            app.unwatched();
+            None
+        }
+    };
     let mut watching = Vec::new();
 
     loop {
-        rewatch(&mut watcher, &mut watching, app.watched());
+        if let Some(watcher) = &mut watcher {
+            rewatch(watcher, &mut watching, app.watched());
+        }
         app.tick(Instant::now());
         terminal.draw(|frame| app.render(frame))?;
 
@@ -1888,6 +1918,25 @@ mod tests {
         app.tick(start + NOTICE_FOR);
         assert!(!bottom_row(&mut app).contains(COPIED));
         assert_eq!(app.wake_in(start + NOTICE_FOR), None);
+    }
+
+    #[test]
+    fn a_screen_that_cannot_watch_says_so_whenever_nothing_else_is_said() {
+        let mut app = alpha("tui-unwatched");
+        assert!(!bottom_row(&mut app).contains(UNWATCHED));
+        app.unwatched();
+        let row = bottom_row(&mut app);
+        assert!(row.starts_with(KEYS) && row.ends_with("not watching for changes "), "{row:?}");
+
+        // A copy is said in its place, for as long as a copy is said.
+        let start = Instant::now();
+        draw(&mut app, 100, 8);
+        app.click(63, 1);
+        app.drag(67, 1);
+        app.release(start);
+        assert!(bottom_row(&mut app).ends_with("copied to clipboard "));
+        app.tick(start + NOTICE_FOR);
+        assert!(bottom_row(&mut app).ends_with("not watching for changes "));
     }
 
     #[test]
