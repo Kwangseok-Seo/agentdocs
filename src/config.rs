@@ -1,6 +1,7 @@
-//! The Sources a person adds by writing them down. `.agentdocs.toml` in the
-//! home directory holds global ones; the same file at a project's root holds
-//! that project's. Each is read once, as the program starts.
+//! The Sources a person adds by writing them down, and the order the Sources
+//! are shown in. `.agentdocs.toml` in the home directory speaks for the global
+//! ones; the same file at a project's root, for that project's. Each is read
+//! once, as the program starts.
 
 use std::fs;
 use std::io;
@@ -13,8 +14,9 @@ use crate::source::{Scope, Source, Walk};
 /// The config file's name, at home and at a project's root alike.
 pub const FILE: &str = ".agentdocs.toml";
 
-/// What one config file holds: its `[[source]]` tables, in the order they are
-/// written. A file with none — empty, or only comments — adds nothing.
+/// What one config file holds: the names of the Sources to show first, and
+/// its `[[source]]` tables, in the order they are written. A file with
+/// neither — empty, or only comments — changes nothing.
 ///
 /// A key that has no place here is refused rather than passed over: written
 /// `[[sources]]`, one letter too many, the file would otherwise add nothing
@@ -22,6 +24,8 @@ pub const FILE: &str = ".agentdocs.toml";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
+    #[serde(default)]
+    order: Vec<String>,
     #[serde(default)]
     source: Vec<Row>,
 }
@@ -47,20 +51,26 @@ pub enum Problem {
     /// It was read, and does not hold what a config file holds.
     #[error(transparent)]
     Parse(#[from] toml::de::Error),
+    /// It holds what a config file holds, and its `order` names a Source
+    /// that its scope does not have.
+    #[error("`order` names `{0}`, and no Source here is called that")]
+    Order(String),
 }
 
-/// The Sources written in the config file in `dir`, each of `scope`, with its
-/// path taken from `dir` — or from `home` when written `~/…`. None when there
-/// is no such file; a file that is there but cannot be used adds none of its
-/// Sources, and says why instead.
-pub fn sources(dir: &Path, home: &Path, scope: Scope) -> Result<Vec<Source>, Problem> {
+/// Add the Sources written in the config file in `dir` to `sources`, the
+/// ones `scope` already has, each with its path taken from `dir` — or from
+/// `home` when written `~/…` — and then put them all in the file's order:
+/// the Sources it names first, as it names them, and the rest after, as they
+/// came. With no such file nothing changes; a file that is there but cannot
+/// be used changes nothing either, and says why instead.
+pub fn add(dir: &Path, home: &Path, scope: Scope, sources: &mut Vec<Source>) -> Result<(), Problem> {
     let text = match fs::read_to_string(dir.join(FILE)) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
         read => read?,
     };
     let file: File = toml::from_str(&text)?;
 
-    let sources = file
+    let written: Vec<Source> = file
         .source
         .into_iter()
         .map(|row| {
@@ -71,7 +81,16 @@ pub fn sources(dir: &Path, home: &Path, scope: Scope) -> Result<Vec<Source>, Pro
             Source::new(row.name, path, scope, row.walk)
         })
         .collect();
-    Ok(sources)
+    let known = |name: &String| sources.iter().chain(&written).any(|src| src.name == *name);
+    if let Some(name) = file.order.iter().find(|name| !known(name)) {
+        return Err(Problem::Order(name.clone()));
+    }
+
+    sources.extend(written);
+    // Sorting is stable: Sources that sort the same keep the order they came in.
+    let place = |src: &Source| file.order.iter().position(|name| *name == src.name).unwrap_or(file.order.len());
+    sources.sort_by_key(place);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -101,12 +120,88 @@ mod tests {
             .collect()
     }
 
+    /// What the config file in `dir` adds to a scope that has no Sources yet.
+    fn sources(dir: &Path, home: &Path, scope: Scope) -> Result<Vec<Source>, Problem> {
+        let mut sources = Vec::new();
+        add(dir, home, scope, &mut sources).map(|()| sources)
+    }
+
     fn parse_error(result: Result<Vec<Source>, Problem>) -> String {
         match result {
             Err(Problem::Parse(e)) => e.to_string(),
-            Err(Problem::Read(e)) => panic!("read, not parsed: {e}"),
+            Err(other) => panic!("not a parse problem: {other}"),
             Ok(sources) => panic!("parsed, {} Sources", sources.len()),
         }
+    }
+
+    /// Sources named `names`, each standing for a default of the scope.
+    fn defaults(dir: &Path, names: &[&str]) -> Vec<Source> {
+        names.iter().map(|name| Source::new(*name, dir.join(name), Scope::Project, Walk::MarkdownFiles)).collect()
+    }
+
+    fn named(sources: &[Source]) -> Vec<&str> {
+        sources.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    #[test]
+    fn the_sources_order_names_come_first_as_named_and_the_rest_keep_their_places() {
+        let dir = config(
+            "config-order",
+            "order = [\"wiki\", \"docs\"]\n\n[[source]]\nname = \"wiki\"\npath = \"Wiki\"\nwalk = \"markdown-files\"\n",
+        );
+        let mut sources = defaults(&dir, &["root md", "docs", "notes"]);
+        add(&dir, &dir, Scope::Project, &mut sources).ok().unwrap();
+        assert_eq!(named(&sources), ["wiki", "docs", "root md", "notes"]);
+    }
+
+    #[test]
+    fn sources_the_order_does_not_name_keep_their_places_however_many() {
+        // Under twenty, an unstable sort happens to keep them too; past that
+        // it need not.
+        let dir = config("config-order-many", "order = [\"s50\"]\n");
+        let names: Vec<String> = (0..100).map(|i| format!("s{i}")).collect();
+        let mut sources = defaults(&dir, &names.iter().map(String::as_str).collect::<Vec<_>>());
+        add(&dir, &dir, Scope::Project, &mut sources).ok().unwrap();
+
+        let mut expected = vec!["s50".to_string()];
+        expected.extend(names.iter().filter(|n| *n != "s50").cloned());
+        assert_eq!(named(&sources), expected);
+    }
+
+    #[test]
+    fn an_order_alone_puts_the_scopes_own_sources_in_order() {
+        let dir = config("config-order-only", "order = [\"notes\"]\n");
+        let mut sources = defaults(&dir, &["root md", "docs", "notes"]);
+        add(&dir, &dir, Scope::Project, &mut sources).ok().unwrap();
+        assert_eq!(named(&sources), ["notes", "root md", "docs"]);
+    }
+
+    #[test]
+    fn an_order_naming_no_source_here_is_refused_and_changes_nothing() {
+        let dir = config(
+            "config-order-unknown",
+            "order = [\"docs\", \"wkii\"]\n\n[[source]]\nname = \"wiki\"\npath = \"Wiki\"\nwalk = \"markdown-files\"\n",
+        );
+        let mut sources = defaults(&dir, &["root md", "docs"]);
+        match add(&dir, &dir, Scope::Project, &mut sources) {
+            Err(problem @ Problem::Order(_)) => {
+                assert_eq!(problem.to_string(), "`order` names `wkii`, and no Source here is called that")
+            }
+            other => panic!("expected an order problem, got {:?}", other.err()),
+        }
+        assert_eq!(named(&sources), ["root md", "docs"]);
+    }
+
+    #[test]
+    fn an_order_written_below_a_source_table_belongs_to_that_table_and_is_refused() {
+        // TOML gives every key after `[[source]]` to that table, up to the
+        // next header — so `order` there is a field no Source has.
+        let dir = config(
+            "config-order-late",
+            "[[source]]\nname = \"wiki\"\npath = \"Wiki\"\nwalk = \"markdown-files\"\norder = [\"wiki\"]\n",
+        );
+        let error = parse_error(sources(&dir, &dir, Scope::Project));
+        assert!(error.contains("unknown field `order`, expected one of `name`, `path`, `walk`"), "{error}");
     }
 
     #[test]

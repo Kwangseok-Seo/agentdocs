@@ -2259,7 +2259,7 @@ mod tests {
     fn with_unused_config(name: &str, text: &str) -> App {
         let dir = scratch(name);
         write(&dir.join(config::FILE), text);
-        let Err(problem) = config::sources(&dir, &dir, Scope::Global) else { panic!("could be used") };
+        let Err(problem) = config::add(&dir, &dir, Scope::Global, &mut Vec::new()) else { panic!("could be used") };
         App::new(
             vec![
                 Source::new("rules", dir.join("rules"), Scope::Global, Walk::MarkdownFiles),

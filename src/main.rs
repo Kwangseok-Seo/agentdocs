@@ -41,15 +41,17 @@ fn main() -> io::Result<()> {
     let mut sources = Vec::new();
     let mut problems = Vec::new();
     if let Some(home) = &home {
-        sources.push(Source::new("skills", home.join(".claude").join("skills"), Scope::Global, Walk::BundleDirs));
-        sources.push(Source::new("rules", home.join(".claude").join("rules"), Scope::Global, Walk::MarkdownFiles));
-        sources.push(Source::new("agents", home.join(".claude").join("agents"), Scope::Global, Walk::MarkdownFiles));
-        sources.push(Source::new("commands", home.join(".claude").join("commands"), Scope::Global, Walk::MarkdownFiles));
-        sources.push(Source::new("agents/skills", home.join(".agents").join("skills"), Scope::Global, Walk::BundleDirs));
-        match config::sources(home, home, Scope::Global) {
-            Ok(mut written) => sources.append(&mut written),
-            Err(problem) => problems.push((Scope::Global, problem)),
+        let mut global = vec![
+            Source::new("skills", home.join(".claude").join("skills"), Scope::Global, Walk::BundleDirs),
+            Source::new("rules", home.join(".claude").join("rules"), Scope::Global, Walk::MarkdownFiles),
+            Source::new("agents", home.join(".claude").join("agents"), Scope::Global, Walk::MarkdownFiles),
+            Source::new("commands", home.join(".claude").join("commands"), Scope::Global, Walk::MarkdownFiles),
+            Source::new("agents/skills", home.join(".agents").join("skills"), Scope::Global, Walk::BundleDirs),
+        ];
+        if let Err(problem) = config::add(home, home, Scope::Global, &mut global) {
+            problems.push((Scope::Global, problem));
         }
+        sources.append(&mut global);
     }
 
     let root = match (&cwd, &home) {
@@ -58,12 +60,14 @@ fn main() -> io::Result<()> {
     };
 
     if let (Some(r), Some(home)) = (&root, &home) {
-        sources.push(Source::new("root md", r.clone(), Scope::Project, Walk::MarkdownFiles));
-        sources.push(Source::new("docs", r.join("docs"), Scope::Project, Walk::MarkdownTree));
-        match config::sources(r, home, Scope::Project) {
-            Ok(mut written) => sources.append(&mut written),
-            Err(problem) => problems.push((Scope::Project, problem)),
+        let mut project = vec![
+            Source::new("root md", r.clone(), Scope::Project, Walk::MarkdownFiles),
+            Source::new("docs", r.join("docs"), Scope::Project, Walk::MarkdownTree),
+        ];
+        if let Err(problem) = config::add(r, home, Scope::Project, &mut project) {
+            problems.push((Scope::Project, problem));
         }
+        sources.append(&mut project);
     }
 
     let global_header = match &home {
@@ -258,9 +262,9 @@ mod tests {
     fn problem(name: &str, text: &str) -> Problem {
         let dir = scratch(name);
         write(&dir.join(config::FILE), text);
-        match config::sources(&dir, &dir, Scope::Global) {
+        match config::add(&dir, &dir, Scope::Global, &mut Vec::new()) {
             Err(problem) => problem,
-            Ok(_) => panic!("{text:?} could be used"),
+            Ok(()) => panic!("{text:?} could be used"),
         }
     }
 
@@ -287,7 +291,7 @@ mod tests {
                 "      |",
                 "    1 | [[sources]]",
                 "      |   ^^^^^^^",
-                "    unknown field `sources`, expected `source`",
+                "    unknown field `sources`, expected `order` or `source`",
                 "PROJECT here",
                 "  docs:(missing)",
                 "  .agentdocs.toml:(invalid)",
@@ -306,12 +310,26 @@ mod tests {
         // more, and goes under it as the parser's words do.
         let dir = scratch("main-unreadable");
         std::fs::write(dir.join(config::FILE), [0xff, 0xfe, 0x00]).unwrap();
-        let Err(problem) = config::sources(&dir, &dir, Scope::Global) else { panic!("read as text") };
+        let Err(problem) = config::add(&dir, &dir, Scope::Global, &mut Vec::new()) else { panic!("read as text") };
 
         let lines = written_with(&[], &[(Scope::Global, problem)]);
         assert_eq!(
             lines,
             ["GLOBAL", "  .agentdocs.toml:(unreadable)", "    stream did not contain valid UTF-8", "PROJECT here"]
+        );
+    }
+
+    #[test]
+    fn an_order_naming_no_source_is_an_invalid_file_too() {
+        let said = written_with(&[], &[(Scope::Global, problem("main-order-unknown", "order = [\"rulez\"]\n"))]);
+        assert_eq!(
+            said,
+            [
+                "GLOBAL",
+                "  .agentdocs.toml:(invalid)",
+                "    `order` names `rulez`, and no Source here is called that",
+                "PROJECT here",
+            ]
         );
     }
 

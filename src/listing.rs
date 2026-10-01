@@ -145,7 +145,7 @@ pub fn failed(name: &str, err: &io::Error) -> String {
 pub fn unused(problem: &Problem) -> String {
     let why = match problem {
         Problem::Read(e) => reason(e.kind()),
-        Problem::Parse(_) => "invalid",
+        Problem::Parse(_) | Problem::Order(_) => "invalid",
     };
     format!("  {}:({why})", config::FILE)
 }
