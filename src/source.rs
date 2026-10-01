@@ -225,7 +225,7 @@ impl Source {
     /// source table is copied once, and a `String` read from a config file is
     /// moved in as it is.
     pub fn new(name: impl Into<String>, path: PathBuf, scope: Scope, walk: Walk) -> Self {
-        Source { name: name.into(), path: path, scope: scope, walk: walk }
+        Source { name: name.into(), path, scope, walk }
     }
 
     pub fn entries(&self) -> io::Result<Walked> {
