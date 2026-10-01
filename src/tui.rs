@@ -2559,18 +2559,19 @@ mod tests {
         let dir = scratch("tui-tree-held-bundle");
         write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
         write(&dir.join("alpha").join("REFERENCE.md"), "# supporting\n");
-        let Some(_held) = hold(&dir.join("alpha")) else { return };
+        let Some(held) = hold(&dir.join("alpha")) else { return };
+        let row = format!("    alpha ({})", reason(held.kind));
 
         let mut app = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
         press(&mut app, &[KeyCode::Tab, KeyCode::Char('l'), KeyCode::Char('j')]);
-        assert_eq!(tree(&mut app), ["▾ alpha", "    alpha (unreadable)"]);
+        assert_eq!(tree(&mut app), ["▾ alpha", row.as_str()]);
         press(&mut app, &[KeyCode::Char('h')]);
         assert_eq!(app.entries.selected(), Some(0));
-        assert_eq!(tree(&mut app), ["▾ alpha", "    alpha (unreadable)"]);
+        assert_eq!(tree(&mut app), ["▾ alpha", row.as_str()]);
 
         // Nor do l and Enter on that row reach the Bundle.
         press(&mut app, &[KeyCode::Char('j'), KeyCode::Char('l'), KeyCode::Enter]);
-        assert_eq!(tree(&mut app), ["▾ alpha", "    alpha (unreadable)"]);
+        assert_eq!(tree(&mut app), ["▾ alpha", row.as_str()]);
     }
 
     #[test]
@@ -2580,17 +2581,20 @@ mod tests {
         let items: String = (1..=12).map(|n| format!("- {n}\n")).collect();
         write(&dir.join("alpha").join("SKILL.md"), &format!("---\nname: alpha\n---\n{items}"));
         write(&dir.join("alpha").join("REFERENCE.md"), "# supporting\n");
-        let Some(_held) = hold(&dir.join("alpha")) else { return };
+        let Some(held) = hold(&dir.join("alpha")) else { return };
+        let said = format!("(this could not be read: {})", reason(held.kind));
 
         let mut app = app(vec![Source::new("skills", dir, Scope::Global, Walk::BundleDirs)]);
         draw(&mut app, 100, 8);
         press(&mut app, &[KeyCode::Tab, KeyCode::PageDown]);
         assert_eq!(first_row(&mut app), "• 5");
         press(&mut app, &[KeyCode::Char('l'), KeyCode::Char('j'), KeyCode::PageDown]);
-        assert_eq!(first_row(&mut app), "(this could not be read: unreadable)");
+        // 38 columns: `permission denied`, Unix's reason, takes a second row.
+        let rows: Vec<String> = preview(&mut app).into_iter().filter(|row| !row.is_empty()).collect();
+        assert_eq!(rows.join(" "), said);
         // A drag over the note is counted from where the note is drawn.
-        let note = drag_across(&mut app, (61, 1), (96, 1));
-        assert_eq!(note.as_deref(), Some("(this could not be read: unreadable)"));
+        let note = drag_across(&mut app, (61, 1), (60 + rows[0].chars().count() as u16, 1));
+        assert_eq!(note.as_deref(), Some(rows[0].as_str()));
         // The click handed j and k to the preview; round to the Entries.
         press(&mut app, &[KeyCode::Tab, KeyCode::Tab]);
         assert!(app.focus == Pane::Entries);
@@ -2689,14 +2693,16 @@ mod tests {
     fn what_could_not_be_read_is_a_row_that_says_why() {
         let dir = scratch("tui-tree-unread");
         write(&dir.join("guide").join("secret").join("end.md"), "# end\n");
-        let Some(_held) = hold(&dir.join("guide").join("secret")) else { return };
+        let Some(held) = hold(&dir.join("guide").join("secret")) else { return };
+        let why = reason(held.kind);
 
         let mut app = nested_in(dir);
         press(&mut app, &[KeyCode::Char('l'), KeyCode::Char('j')]);
-        assert_eq!(tree(&mut app), ["▾ guide/", "    secret (unreadable)"]);
-        let rows = screen(&mut app, 100, 12).join("\n");
+        assert_eq!(tree(&mut app), ["▾ guide/".to_string(), format!("    secret ({why})")]);
+        // Wide enough for the note on one row, whichever reason it gives.
+        let rows = screen(&mut app, 120, 12).join("\n");
         assert!(rows.contains("docs:0 (1 unreadable)"), "{rows}");
-        assert!(rows.contains("(this could not be read: unreadable)"), "{rows}");
+        assert!(rows.contains(&format!("(this could not be read: {why})")), "{rows}");
     }
 
     #[test]

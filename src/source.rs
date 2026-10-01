@@ -1,6 +1,9 @@
+use std::cmp::Ordering;
 use std::fs;
 use std::io;
+use std::iter::Peekable;
 use std::path::{Path, PathBuf};
+use std::str::Chars;
 
 use serde::Deserialize;
 
@@ -35,6 +38,7 @@ fn md_files(dir: &Path) -> io::Result<Walked> {
         if ft.is_dir() { continue };
         if let Some(node) = document(path) { out.nodes.push(node); }
     }
+    in_order(&mut out.nodes);
     Ok(out)
 }
 
@@ -59,6 +63,7 @@ fn md_tree(dir: &Path) -> io::Result<Walked> {
             out.nodes.push(node);
         }
     }
+    in_order(&mut out.nodes);
     Ok(out)
 }
 
@@ -78,8 +83,16 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
         if !bundle_shaped { continue };
         let Some(name) = path.file_name() else { continue };
 
+        // Only a Lead that is not there is none. `is_file` answers "no" for one
+        // it was not allowed to look at too — on Unix, in a directory shut to
+        // its owner — and the Bundle said it had no SKILL.md; one that could
+        // not be looked at is tried, and says why it will not open.
         let lead_path = path.join("SKILL.md");
-        let lead = if lead_path.is_file() { Some(lead_path) } else { None };
+        let lead = match fs::metadata(&lead_path) {
+            Ok(meta) => meta.is_file().then_some(lead_path),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(_) => Some(lead_path),
+        };
 
         // Only a directory is walked into. What a link stands in for is not
         // asked at all — the entry itself says which it is (ADR-0007). A
@@ -107,6 +120,7 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
             Err(e) => out.nodes.push(unreadable(entry.path, &e)),
         }
     }
+    in_order(&mut out.nodes);
     Ok(out)
 }
 
@@ -147,6 +161,56 @@ fn described(dir: &Path, item: io::Result<fs::DirEntry>, out: &mut Walked) -> Op
 /// The row for something at `path` that could not be looked at, and why.
 fn unreadable(path: PathBuf, e: &io::Error) -> Node {
     Node::Unreadable { path, reason: e.kind() }
+}
+
+/// Put one directory's rows in the order a person expects of a directory.
+/// `read_dir` gives whatever order the file system keeps — by name on NTFS,
+/// by hash on ext4 — and what a Walk shows must not change with the machine
+/// it runs on.
+fn in_order(nodes: &mut [Node]) {
+    nodes.sort_by(|a, b| by_name(a.path(), b.path()));
+}
+
+/// Two paths compared by their last parts as a file manager compares names:
+/// ignoring case, and with a run of digits read as a number, so that `M2`
+/// comes before `M10`. Names that differ only in case or in leading zeros
+/// are told apart by the paths themselves, so the order is the same every
+/// time.
+fn by_name(a: &Path, b: &Path) -> Ordering {
+    let name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    natural(&name(a), &name(b)).then_with(|| a.cmp(b))
+}
+
+fn natural(a: &str, b: &str) -> Ordering {
+    let (mut a, mut b) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        let order = match (a.peek(), b.peek()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => number(&mut a).cmp(&number(&mut b)),
+            (Some(_), Some(_)) => {
+                let (x, y) = (a.next().unwrap(), b.next().unwrap());
+                x.to_lowercase().cmp(y.to_lowercase())
+            }
+        };
+        if order != Ordering::Equal {
+            return order;
+        }
+    }
+}
+
+/// A run of digits, taken off the front of `chars`, as something that
+/// orders the way the number does: with its leading zeros gone, fewer
+/// digits is smaller, and among as many the first that differs decides.
+/// No run is too long for it, as one parsed into an integer could be.
+fn number(chars: &mut Peekable<Chars>) -> (usize, String) {
+    let mut run = String::new();
+    while let Some(c) = chars.next_if(char::is_ascii_digit) {
+        run.push(c);
+    }
+    let significant = run.trim_start_matches('0');
+    (significant.len(), significant.to_string())
 }
 
 pub struct Source {
@@ -539,6 +603,37 @@ mod tests {
         assert_eq!(md_tree(&dir).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 
+    // ------------------------------------------------------------------ order
+
+    /// The last part of each row's path, in the order the Walk gave them —
+    /// unlike `outline`, which sorts.
+    fn as_given(nodes: &[Node]) -> Vec<String> {
+        nodes.iter().map(|node| node.path().file_name().unwrap().to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn names_are_compared_as_a_file_manager_compares_them() {
+        let mut names = vec!["file10", "File9", "file09", "_x", "1-b", "file", "0001-a", "ä", "z", "a", "A"];
+        names.sort_by(|a, b| by_name(Path::new(a), Path::new(b)));
+        assert_eq!(names, ["0001-a", "1-b", "_x", "A", "a", "file", "File9", "file09", "file10", "z", "ä"]);
+    }
+
+    #[test]
+    fn every_walk_gives_its_rows_in_order_of_name() {
+        // On ext4 `read_dir` gave `long.md` before `a/`, and a test that had
+        // only ever run on NTFS failed.
+        let dir = scratch("order-walks");
+        for name in ["M10.md", "notes.md", "m2.md", "M1.md"] {
+            write(&dir.join("docs").join(name), "# x\n");
+            write(&dir.join("skills").join(name.trim_end_matches(".md")).join("SKILL.md"), "# x\n");
+        }
+        write(&dir.join("docs").join("B").join("x.md"), "# x\n");
+
+        assert_eq!(as_given(&md_files(&dir.join("docs")).unwrap().nodes), ["M1.md", "m2.md", "M10.md", "notes.md"]);
+        assert_eq!(as_given(&md_tree(&dir.join("docs")).unwrap().nodes), ["B", "M1.md", "m2.md", "M10.md", "notes.md"]);
+        assert_eq!(as_given(&bundle_dirs(&dir.join("skills")).unwrap().nodes), ["M1", "m2", "M10", "notes"]);
+    }
+
     // ------------------------------------------------------------ bundle_dirs
 
     #[test]
@@ -827,8 +922,9 @@ mod tests {
 
     // ------------------------------------------------------ what cannot be read
     //
-    // Each of these holds a file or a directory open so that the Walk cannot
-    // open it, and gives up — saying so on stderr — where that is impossible.
+    // Each of these holds a file or a directory so that the Walk cannot read
+    // it, and gives up — saying so on stderr — where that is impossible. Why
+    // it will not read is the platform's: `held.kind`.
 
     #[test]
     fn a_document_that_will_not_open_is_a_row_saying_so() {
@@ -837,14 +933,14 @@ mod tests {
         let dir = scratch("unread-file");
         write(&dir.join("kept.md"), "# kept");
         write(&dir.join("locked.md"), "# locked");
-        let Some(_held) = hold(&dir.join("locked.md")) else { return };
+        let Some(held) = hold(&dir.join("locked.md")) else { return };
 
         let walked = md_files(&dir).unwrap();
         assert_eq!(names(&walked), vec!["kept"]);
         let unread = walked.unreadable();
         assert_eq!(unread.len(), 1);
         assert_eq!(unread[0].0, dir.join("locked.md"));
-        assert_eq!(reason(unread[0].1), "unreadable");
+        assert_eq!(unread[0].1, held.kind);
     }
 
     #[test]
@@ -855,10 +951,11 @@ mod tests {
         write(&dir.join("a.md"), "# a");
         write(&dir.join("sub").join("b.md"), "# b");
         write(&dir.join("sub").join("secret").join("c.md"), "# c");
-        let Some(_held) = hold(&dir.join("sub").join("secret")) else { return };
+        let Some(held) = hold(&dir.join("sub").join("secret")) else { return };
 
         let walked = md_tree(&dir).unwrap();
-        assert_eq!(outline(&walked.nodes, 0), vec!["a", "sub/", "  b", "  secret (unreadable)"]);
+        let secret = format!("  secret ({})", reason(held.kind));
+        assert_eq!(outline(&walked.nodes, 0), vec!["a", "sub/", "  b", &secret]);
         assert_eq!(walked.unreadable().len(), 1);
     }
 
@@ -867,11 +964,11 @@ mod tests {
         let dir = scratch("unread-lead");
         write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
         write(&dir.join("alpha").join("REFERENCE.md"), "# supporting");
-        let Some(_held) = hold(&dir.join("alpha").join("SKILL.md")) else { return };
+        let Some(held) = hold(&dir.join("alpha").join("SKILL.md")) else { return };
 
         // The Lead is what names and shows a Bundle.
         let walked = bundle_dirs(&dir).unwrap();
-        assert_eq!(outline(&walked.nodes, 0), vec!["alpha (unreadable)"]);
+        assert_eq!(outline(&walked.nodes, 0), vec![format!("alpha ({})", reason(held.kind))]);
     }
 
     #[test]
@@ -880,11 +977,12 @@ mod tests {
         write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
         write(&dir.join("alpha").join("REFERENCE.md"), "# supporting");
         write(&dir.join("alpha").join("FORMS.md"), "# forms");
-        let Some(_held) = hold(&dir.join("alpha").join("FORMS.md")) else { return };
+        let Some(held) = hold(&dir.join("alpha").join("FORMS.md")) else { return };
 
         let walked = bundle_dirs(&dir).unwrap();
         let rows = inside(walked.entries()[0]).unwrap();
-        assert_eq!(outline(rows, 0), vec!["FORMS.md (unreadable)", "REFERENCE"]);
+        let forms = format!("FORMS.md ({})", reason(held.kind));
+        assert_eq!(outline(rows, 0), vec![forms.as_str(), "REFERENCE"]);
         assert_eq!(walked.unreadable().len(), 1);
     }
 
@@ -893,13 +991,27 @@ mod tests {
         let dir = scratch("unread-bundle");
         write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
         write(&dir.join("alpha").join("REFERENCE.md"), "# supporting");
-        let Some(_held) = hold(&dir.join("alpha")) else { return };
+        let Some(held) = hold(&dir.join("alpha")) else { return };
 
         let walked = bundle_dirs(&dir).unwrap();
         assert_eq!(names(&walked), vec!["alpha"]);
         let rows = inside(walked.entries()[0]).unwrap();
-        assert_eq!(outline(rows, 0), vec!["alpha (unreadable)"]);
+        assert_eq!(outline(rows, 0), vec![format!("alpha ({})", reason(held.kind))]);
         assert_eq!(walked.unreadable().len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bundle_directory_shut_to_its_lead_as_well_is_not_said_to_have_none() {
+        // Shut entirely, a directory keeps even the names in it from being
+        // looked up. Found on Linux: the Bundle was listed with no Lead, and
+        // its preview said it had no SKILL.md.
+        let dir = scratch("unread-bundle-shut");
+        write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        let Some(held) = shut(&dir.join("alpha")) else { return };
+
+        let walked = bundle_dirs(&dir).unwrap();
+        assert_eq!(outline(&walked.nodes, 0), vec![format!("alpha ({})", reason(held.kind))]);
     }
 
     // -------------------------------------------------------------------links

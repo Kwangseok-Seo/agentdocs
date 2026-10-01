@@ -2,6 +2,7 @@
 
 use std::env;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::entry::{Entry, EntryKind, Hit, Node};
@@ -75,26 +76,102 @@ pub fn link_dir(target: &Path, link: &Path) -> bool {
     made.is_ok()
 }
 
-/// Hold `path` — a file or a directory — open so that nothing else can open
-/// it while the returned handle lives: something this program cannot read,
-/// which `std` has no other way to make. Windows lets a handle refuse to be
-/// shared; elsewhere there is no such hold, and the test says so on stderr.
-pub fn hold(path: &Path) -> Option<fs::File> {
+/// Make `path` something this program cannot read for as long as the
+/// returned value lives, which `std` has no portable way to make: a file that
+/// will not open, or a directory that will not be listed, though what is in
+/// it can still be opened by name. On Windows a handle is held open that
+/// refuses to be shared; on Unix the permissions are taken away — for a
+/// directory, all but the one that lets a name inside it be looked up — and
+/// given back when the value is dropped, so that the next run can clear the
+/// scratch directory.
+///
+/// Whether it worked is found by trying, as a Walk would, and what the
+/// trying met is `Held::kind`: the reason differs by platform. Where the
+/// hold cannot be made the test says so on stderr and passes the case over —
+/// as it must for root, who reads whatever the permissions say.
+pub fn hold(path: &Path) -> Option<Held> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
         // FILE_FLAG_BACKUP_SEMANTICS, without which a directory cannot be
         // opened at all.
-        let held = fs::OpenOptions::new().read(true).share_mode(0).custom_flags(0x0200_0000).open(path);
-        if let Err(e) = &held {
-            eprintln!("SKIPPED {}: cannot hold it open ({:?})", path.display(), e.kind());
-        }
-        held.ok()
+        let file = match fs::OpenOptions::new().read(true).share_mode(0).custom_flags(0x0200_0000).open(path) {
+            Ok(file) => file,
+            Err(e) => {
+                eprintln!("SKIPPED {}: cannot hold it open ({:?})", path.display(), e.kind());
+                return None;
+            }
+        };
+        let kind = refused(path)?;
+        Some(Held { kind, _file: file })
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        eprintln!("SKIPPED {}: no way to hold a path open on this platform", path.display());
+        take_away(path, if path.is_dir() { 0o100 } else { 0 })
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        eprintln!("SKIPPED {}: no way to hold a path on this platform", path.display());
         None
+    }
+}
+
+/// A directory shut entirely: not listed, and nothing in it looked up by
+/// name either — which Unix permissions can do and a Windows handle cannot.
+#[cfg(unix)]
+pub fn shut(path: &Path) -> Option<Held> {
+    take_away(path, 0)
+}
+
+/// What `hold` and `shut` return: while it lives, the path cannot be read.
+pub struct Held {
+    pub kind: io::ErrorKind,
+    #[cfg(windows)]
+    _file: fs::File,
+    #[cfg(unix)]
+    given_back: (PathBuf, u32),
+}
+
+#[cfg(unix)]
+impl Drop for Held {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let (path, mode) = &self.given_back;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(*mode));
+    }
+}
+
+/// Leave only `mode` of `path`'s permissions, keeping the rest to give back.
+#[cfg(unix)]
+fn take_away(path: &Path, mode: u32) -> Option<Held> {
+    use std::os::unix::fs::PermissionsExt;
+    let kept = match fs::metadata(path) {
+        Ok(meta) => meta.permissions().mode(),
+        Err(e) => {
+            eprintln!("SKIPPED {}: cannot read its permissions ({:?})", path.display(), e.kind());
+            return None;
+        }
+    };
+    if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(mode)) {
+        eprintln!("SKIPPED {}: cannot take its permissions away ({:?})", path.display(), e.kind());
+        return None;
+    }
+    // Made before the trying, so that a hold that did not take is given back.
+    let mut held = Held { kind: io::ErrorKind::Other, given_back: (path.to_path_buf(), kept) };
+    held.kind = refused(path)?;
+    Some(held)
+}
+
+/// What reading `path` meets, as a Walk reads it: a directory listed, a file
+/// opened. `None`, said on stderr, when it reads after all.
+fn refused(path: &Path) -> Option<io::ErrorKind> {
+    let tried = if path.is_dir() { fs::read_dir(path).map(drop) } else { fs::File::open(path).map(drop) };
+    match tried {
+        Err(e) => Some(e.kind()),
+        Ok(()) => {
+            eprintln!("SKIPPED {}: it reads all the same — run as root?", path.display());
+            None
+        }
     }
 }
 
