@@ -157,8 +157,11 @@ pub struct Source {
 }
 
 impl Source {
-    pub fn new(name: &str, path: PathBuf, scope: Scope, walk: Walk) -> Self {
-        Source { name: name.to_string(), path: path, scope: scope, walk: walk }
+    /// `name` is anything that becomes a `String`: a `&str` written in the
+    /// source table is copied once, and a `String` read from a config file is
+    /// moved in as it is.
+    pub fn new(name: impl Into<String>, path: PathBuf, scope: Scope, walk: Walk) -> Self {
+        Source { name: name.into(), path: path, scope: scope, walk: walk }
     }
 
     pub fn entries(&self) -> io::Result<Walked> {

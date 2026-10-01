@@ -65,6 +65,9 @@ pub struct App {
     /// Each config file that could not be used, and the scope whose Sources
     /// it would have added.
     problems: Vec<(Scope, Problem)>,
+    /// The selected row of the Sources pane: a Source by its index, or past
+    /// the last Source, a config file that could not be used, by its index
+    /// among those.
     source: usize,
     entries: ListState,
     /// The directories and Bundles whose rows are showing, by path. Kept apart
@@ -605,8 +608,9 @@ impl App {
     fn down(&mut self) {
         match self.focus {
             Pane::Sources => {
-                if self.source + 1 < self.sources.len() {
-                    self.pick_source(self.source + 1);
+                let picks = self.picks();
+                if let Some(&next) = picks.iter().skip_while(|&&pick| pick != self.source).nth(1) {
+                    self.pick_source(next);
                 }
             }
             Pane::Entries => {
@@ -624,8 +628,9 @@ impl App {
     fn up(&mut self) {
         match self.focus {
             Pane::Sources => {
-                if self.source > 0 {
-                    self.pick_source(self.source - 1);
+                let picks = self.picks();
+                if let Some(&before) = picks.iter().rev().skip_while(|&&pick| pick != self.source).nth(1) {
+                    self.pick_source(before);
                 }
             }
             Pane::Entries => {
@@ -738,7 +743,7 @@ impl App {
     /// that Source's index. Drawing and clicking both read this, so a click
     /// lands on the row that was drawn. A config file that could not be used
     /// has a row at the end of its scope, where its Sources would have been,
-    /// and nothing to select.
+    /// numbered after the last Source.
     fn source_rows(&self) -> Vec<(String, Option<usize>)> {
         let mut rows = vec![(self.global.clone(), None)];
         let mut project_shown = false;
@@ -765,10 +770,25 @@ impl App {
 
     /// The row of each config file of `scope` that could not be used.
     fn unused_rows(&self, scope: Scope) -> impl Iterator<Item = (String, Option<usize>)> + '_ {
+        let after = self.sources.len();
         self.problems
             .iter()
-            .filter(move |(of, _)| *of == scope)
-            .map(|(_, problem)| (unused(problem), None))
+            .enumerate()
+            .filter(move |(_, (of, _))| *of == scope)
+            .map(move |(k, (_, problem))| (unused(problem), Some(after + k)))
+    }
+
+    /// The selectable rows of the Sources pane, top to bottom: what j and k
+    /// step through.
+    fn picks(&self) -> Vec<usize> {
+        self.source_rows().into_iter().filter_map(|(_, pick)| pick).collect()
+    }
+
+    /// The config file that could not be used, when its row is the one
+    /// selected.
+    fn problem(&self) -> Option<&Problem> {
+        let k = self.source.checked_sub(self.sources.len())?;
+        self.problems.get(k).map(|(_, problem)| problem)
     }
 
     fn render_sources(&mut self, frame: &mut Frame, area: Rect) {
@@ -797,8 +817,12 @@ impl App {
     }
 
     /// What the preview shows for the selected row, cut into rows `width`
-    /// wide: its file drawn as Markdown, or a line saying why there is none.
+    /// wide: its file drawn as Markdown, or a line saying why there is none —
+    /// or, for a config file that could not be used, what stopped it.
     fn preview_lines(&self, width: u16) -> Vec<Line<'_>> {
+        if let Some(problem) = self.problem() {
+            return problem.to_string().lines().flat_map(|line| markdown::note(line.to_string(), width)).collect();
+        }
         match self.entry() {
             Some(entry) => match (&entry.text, entry.doc()) {
                 (Some(text), _) => markdown::render(text, width),
@@ -2230,12 +2254,13 @@ mod tests {
         assert!(rows.contains("PROJECT here"), "{rows}");
     }
 
-    #[test]
-    fn a_config_file_that_cannot_be_used_is_a_row_at_the_end_of_its_scope_that_j_passes_over() {
-        let dir = scratch("tui-unused");
-        write(&dir.join(config::FILE), "[[sources]]\n");
+    /// A global Source and a project one that are not there, and between
+    /// them the home config file, saying `text`, which cannot be used.
+    fn with_unused_config(name: &str, text: &str) -> App {
+        let dir = scratch(name);
+        write(&dir.join(config::FILE), text);
         let Err(problem) = config::sources(&dir, &dir, Scope::Global) else { panic!("could be used") };
-        let mut app = App::new(
+        App::new(
             vec![
                 Source::new("rules", dir.join("rules"), Scope::Global, Walk::MarkdownFiles),
                 Source::new("docs", dir.join("docs"), Scope::Project, Walk::MarkdownTree),
@@ -2243,22 +2268,58 @@ mod tests {
             vec![(Scope::Global, problem)],
             "GLOBAL".to_string(),
             "PROJECT here".to_string(),
-        );
+        )
+    }
 
+    #[test]
+    fn a_config_file_that_cannot_be_used_is_a_row_at_the_end_of_its_scope_that_j_and_k_stop_at() {
+        let mut app = with_unused_config("tui-unused", "[[sources]]\n");
         let rows: Vec<(String, Option<usize>)> = app.source_rows();
         assert_eq!(
             rows,
             [
                 ("GLOBAL".to_string(), None),
                 ("  rules:(missing)".to_string(), Some(0)),
-                ("  .agentdocs.toml:(invalid)".to_string(), None),
+                ("  .agentdocs.toml:(invalid)".to_string(), Some(2)),
                 ("PROJECT here".to_string(), None),
                 ("  docs:(missing)".to_string(), Some(1)),
             ]
         );
 
+        // Down the rows as they are drawn, not as they are numbered.
+        let mut seen = vec![app.source];
+        for _ in 0..3 {
+            press(&mut app, &[KeyCode::Char('j')]);
+            seen.push(app.source);
+        }
+        for _ in 0..3 {
+            press(&mut app, &[KeyCode::Char('k')]);
+            seen.push(app.source);
+        }
+        assert_eq!(seen, [0, 2, 1, 1, 2, 0, 0]);
+    }
+
+    #[test]
+    fn the_preview_of_a_config_file_that_cannot_be_used_is_what_stopped_it() {
+        let mut app = with_unused_config("tui-unused-preview", "[[source]]\nname = \"s\"\npath = \"s\"\nwalk = \"tree\"\n");
         press(&mut app, &[KeyCode::Char('j')]);
-        assert_eq!(app.source, 1);
+        let rows = screen(&mut app, 120, 12);
+        let preview: Vec<String> = rows
+            .iter()
+            .map(|r| r.chars().skip(61).take(58).collect::<String>().trim_end().to_string())
+            .collect();
+        assert_eq!(
+            preview[1..8],
+            [
+                "TOML parse error at line 4, column 8",
+                "  |",
+                "4 | walk = \"tree\"",
+                "  |        ^^^^^^",
+                "unknown variant `tree`, expected one of `markdown-files`,",
+                "`bundle-dirs`, `markdown-tree`",
+                "",
+            ]
+        );
     }
 
     #[test]

@@ -35,12 +35,18 @@ struct Row {
     walk: Walk,
 }
 
-/// Why a config file that is there could not be used.
+/// Why a config file that is there could not be used: the error that stopped
+/// it, which says itself what went wrong — `transparent` hands its words and
+/// its own cause through unchanged. `from` lets `?` turn either error into a
+/// `Problem`.
+#[derive(Debug, thiserror::Error)]
 pub enum Problem {
     /// It would not open, or would not read as text.
-    Read(io::Error),
+    #[error(transparent)]
+    Read(#[from] io::Error),
     /// It was read, and does not hold what a config file holds.
-    Parse(toml::de::Error),
+    #[error(transparent)]
+    Parse(#[from] toml::de::Error),
 }
 
 /// The Sources written in the config file in `dir`, each of `scope`, with its
@@ -49,11 +55,10 @@ pub enum Problem {
 /// Sources, and says why instead.
 pub fn sources(dir: &Path, home: &Path, scope: Scope) -> Result<Vec<Source>, Problem> {
     let text = match fs::read_to_string(dir.join(FILE)) {
-        Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(Problem::Read(e)),
+        read => read?,
     };
-    let file: File = toml::from_str(&text).map_err(Problem::Parse)?;
+    let file: File = toml::from_str(&text)?;
 
     let sources = file
         .source
@@ -63,7 +68,7 @@ pub fn sources(dir: &Path, home: &Path, scope: Scope) -> Result<Vec<Source>, Pro
                 Ok(rest) => home.join(rest),
                 Err(_) => dir.join(&row.path),
             };
-            Source::new(&row.name, path, scope, row.walk)
+            Source::new(row.name, path, scope, row.walk)
         })
         .collect();
     Ok(sources)

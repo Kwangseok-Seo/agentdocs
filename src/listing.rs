@@ -150,15 +150,12 @@ pub fn unused(problem: &Problem) -> String {
     format!("  {}:({why})", config::FILE)
 }
 
-/// What the parser said of a config file it could not use, one line of the
-/// listing per line it said, under the file's row. It quotes the line of the
-/// file it stopped at, so it passes through `printable` like anything else
-/// out of a file.
+/// What stopped a config file being used, one line of the listing per line
+/// it says, under the file's row. The parser quotes the line of the file it
+/// stopped at, so it passes through `printable` like anything else out of a
+/// file.
 pub fn unused_said(problem: &Problem) -> Vec<String> {
-    match problem {
-        Problem::Read(_) => Vec::new(),
-        Problem::Parse(e) => e.to_string().lines().map(|line| format!("    {}", printable(line))).collect(),
-    }
+    problem.to_string().lines().map(|line| format!("    {}", printable(line))).collect()
 }
 
 /// One Entry's line on screen: the name it is known by, and as much of its

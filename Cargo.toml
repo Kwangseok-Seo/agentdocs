@@ -17,6 +17,7 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.0"
 serde = { version = "1.0.229", features = ["derive"] }
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+thiserror = "2.0.21"
 toml = { version = "1.1.6", default-features = false, features = ["parse", "serde", "std"] }
 unicode-segmentation = "1.13"
 unicode-width = "0.2"

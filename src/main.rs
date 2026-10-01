@@ -301,13 +301,18 @@ mod tests {
     }
 
     #[test]
-    fn a_config_file_that_will_not_read_says_why_and_no_more() {
+    fn a_config_file_that_will_not_read_says_what_the_system_said() {
+        // The row's reason is one of four words; what the system said is
+        // more, and goes under it as the parser's words do.
         let dir = scratch("main-unreadable");
         std::fs::write(dir.join(config::FILE), [0xff, 0xfe, 0x00]).unwrap();
         let Err(problem) = config::sources(&dir, &dir, Scope::Global) else { panic!("read as text") };
 
         let lines = written_with(&[], &[(Scope::Global, problem)]);
-        assert_eq!(lines, ["GLOBAL", "  .agentdocs.toml:(unreadable)", "PROJECT here"]);
+        assert_eq!(
+            lines,
+            ["GLOBAL", "  .agentdocs.toml:(unreadable)", "    stream did not contain valid UTF-8", "PROJECT here"]
+        );
     }
 
     #[test]
