@@ -3,7 +3,8 @@ LICENSE-APACHE, beside this file. What follows are the licences of the
 crates the binary is built from — agentdocs among them, and those that only
 run while it is compiled — each given in full with the crates it covers;
 then those of the Rust standard library, of musl on Linux, and of the syntax
-definitions syntect embeds.
+definitions syntect embeds; and last, the conditions Microsoft sets on the
+code of its own that the Windows binary is linked with.
 {{#each licenses}}
 
 ================================================================================
@@ -305,3 +306,33 @@ YAML/YAML.sublime-syntax:
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
+
+================================================================================
+Microsoft's code in the Windows binary: the conditions on passing it on
+--------------------------------------------------------------------------------
+
+agentdocs.exe is linked with Microsoft Distributable Code, copyrighted by
+Microsoft Corporation: the C runtime (libcmt, libvcruntime and libucrt) and
+the Windows SDK's import libraries, embedded in the program by the linker.
+
+If you further distribute programs that include the Microsoft Distributable
+Code, you must comply with the restrictions on distribution specified by
+Microsoft in the license terms of Visual Studio and of the Windows SDK. In
+particular, you must require distributors and external end users to agree to
+terms that protect the Microsoft Distributable Code at least as much as
+Microsoft's own requirements for it.
+
+Passing on agentdocs.exe as it is complies with those requirements, provided
+that you do not:
+
+- alter any copyright, trademark or patent notice in Microsoft's
+  Distributable Code;
+- use Microsoft's trademarks in your programs' names or in a way that
+  suggests your programs come from or are endorsed by Microsoft;
+- distribute Microsoft's Distributable Code to run on a platform other than
+  Microsoft operating systems; or
+- include Microsoft's Distributable Code in malicious, deceptive or unlawful
+  programs.
+
+These conditions apply only to Microsoft's Distributable Code, not to
+agentdocs, which is under MIT OR Apache-2.0, nor to anything else above.

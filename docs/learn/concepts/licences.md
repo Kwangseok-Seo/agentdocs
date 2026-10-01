@@ -33,7 +33,9 @@ So 77 of the 89 ask for their notice whichever licence is chosen, and the archiv
 - **The standard library**, linked into every Rust program, under MIT OR Apache-2.0.
 - **musl**, the C library linked into the Linux binaries ([[cross-compilation]]), under MIT: Rust 1.94 ships musl 1.2.5, and its `COPYRIGHT` file is the notice.
 - **Data a crate embeds.** syntect's default syntax definitions are 75 files from Sublime Text's Packages, compiled into the binary. The repository's licence asks nothing, but three of its files carry their own MIT licence — Rust, C# and YAML.
-- **The Windows C runtime**, linked in by `+crt-static`, comes under Microsoft's terms for Visual Studio, which were not read for this.
+- **Microsoft's code in the Windows binary.** With `+crt-static` the linker takes the C runtime from three static libraries — `libcmt` and `libvcruntime` from Visual Studio, `libucrt` from the Windows SDK — and any Windows build also links the SDK's import libraries, `kernel32.lib` and the rest. Linking the C runtime as a DLL would not take Microsoft's code out: its start-up code, Microsoft's documentation says, is always linked in.
+
+What Microsoft asks of that code is in the licence terms of Visual Studio 2026 and of the Windows SDK, read on 2026-10-01. The SDK's list of what may be distributed names its `.lib` files, "built as part of your program"; Visual Studio's names none of its static libraries, and its documentation marks only their debug builds "Not redistributable". Neither asks for a licence text to go with them. Both ask that whoever passes the code on add significant function of their own, require those they pass it to to protect it as much as Microsoft's terms do, and indemnify Microsoft; the SDK asks as well for the program's own copyright notice, which `LICENSE-MIT` carries. The second is the one a file can meet, and `THIRD-PARTY-LICENSES.txt` ends with a section that does, written after the one CPython ships with its Windows build, `PC/crtlicense.txt`.
 
 ## cargo-about
 
