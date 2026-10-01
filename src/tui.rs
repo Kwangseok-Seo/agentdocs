@@ -44,6 +44,11 @@ const COPIED: &str = "copied to clipboard";
 /// until the next start.
 const UNWATCHED: &str = "not watching for changes";
 
+/// What it says when the system would not take another watch — on Linux,
+/// its limit on inotify watches — so that a change in some directory may
+/// not show.
+const LIMITED: &str = "watch limit reached";
+
 /// How long a notice stays at the right end of the bottom row — herdr's two
 /// seconds.
 const NOTICE_FOR: Duration = Duration::from_secs(2);
@@ -102,8 +107,20 @@ pub struct App {
     /// When the Sources are next read again, once a file has been seen to
     /// change.
     reload_at: Option<Instant>,
-    /// Whether changes on disk are heard: not when no watcher could be made.
-    watching: bool,
+    /// Whether changes on disk are heard.
+    watching: Watching,
+}
+
+/// How much of what the screen shows is watched. Once less than all, it
+/// stays so for as long as the screen is open: a watch the system refused
+/// may have missed a change already.
+#[derive(Clone, Copy, PartialEq)]
+enum Watching {
+    All,
+    /// The system would not take another watch.
+    Limited,
+    /// No watcher could be made.
+    Nothing,
 }
 
 /// A few words at the right end of the bottom row: that a drag was copied, or
@@ -290,7 +307,7 @@ impl App {
             selection: None,
             notice: None,
             reload_at: None,
-            watching: true,
+            watching: Watching::All,
         }
     }
 
@@ -569,7 +586,15 @@ impl App {
     /// No watcher could be made: the screen works as it did before M9, and
     /// says so for as long as it is open.
     fn unwatched(&mut self) {
-        self.watching = false;
+        self.watching = Watching::Nothing;
+    }
+
+    /// The system would not take another watch: some changes may not show,
+    /// and the screen says so for as long as it is open.
+    fn limited(&mut self) {
+        if self.watching == Watching::All {
+            self.watching = Watching::Limited;
+        }
     }
 
     /// Walk every Source again, and take what a Walk finds where it differs
@@ -746,10 +771,11 @@ impl App {
         self.render_entries(frame, middle);
         self.render_preview(frame, right);
         frame.render_widget(KEYS, footer);
-        let said = match &self.notice {
-            Some(notice) => Some((notice.text.as_str(), notice.colour)),
-            None if !self.watching => Some((UNWATCHED, Color::Yellow)),
-            None => None,
+        let said = match (&self.notice, self.watching) {
+            (Some(notice), _) => Some((notice.text.as_str(), notice.colour)),
+            (None, Watching::Nothing) => Some((UNWATCHED, Color::Yellow)),
+            (None, Watching::Limited) => Some((LIMITED, Color::Yellow)),
+            (None, Watching::All) => None,
         };
         if let Some((text, colour)) = said {
             let line = Line::from(format!("{text} ")).right_aligned().style(Style::new().fg(colour));
@@ -997,6 +1023,9 @@ fn edit(terminal: &mut DefaultTerminal, path: &Path) -> io::Result<io::Result<Ex
 enum Message {
     Input(io::Result<Event>),
     Changed,
+    /// notify could not watch a directory that appeared below one it
+    /// watches whole: the system would not take another watch.
+    Limited,
 }
 
 /// Read the terminal with `read` on a thread of its own, one event at a time,
@@ -1019,23 +1048,34 @@ fn read_input(mut read: impl FnMut() -> io::Result<Event>, to_loop: Sender<Messa
 /// Watch what `wanted` names, below a path too where it says so, and stop
 /// watching what it no longer names. What cannot be watched — a link whose
 /// target is gone — is left out of `watching`, and so tried again each time
-/// round, until it can be or is no longer wanted.
-fn rewatch(watcher: &mut impl Watcher, watching: &mut Vec<(PathBuf, bool)>, wanted: Vec<(PathBuf, bool)>) {
+/// round, until it can be or is no longer wanted. Whether the system refused
+/// a watch for being at its limit is handed back, for the screen to say.
+fn rewatch(watcher: &mut impl Watcher, watching: &mut Vec<(PathBuf, bool)>, wanted: Vec<(PathBuf, bool)>) -> bool {
     if *watching == wanted {
-        return;
+        return false;
     }
     for (path, _) in watching.iter().filter(|w| !wanted.contains(w)) {
         let _ = watcher.unwatch(path);
     }
     let mut now = Vec::new();
+    let mut limited = false;
     for (path, below) in wanted {
         let kept = watching.contains(&(path.clone(), below));
         let mode = if below { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
-        if kept || watcher.watch(&path, mode).is_ok() {
+        let made = kept
+            || match watcher.watch(&path, mode) {
+                Ok(()) => true,
+                Err(e) => {
+                    limited |= matches!(e.kind, notify::ErrorKind::MaxFilesWatch);
+                    false
+                }
+            };
+        if made {
             now.push((path, below));
         }
     }
     *watching = now;
+    limited
 }
 
 /// A watcher that tells the loop over `to_loop` when a file may have changed.
@@ -1052,12 +1092,16 @@ fn watcher(to_loop: Sender<Message>) -> notify::Result<RecommendedWatcher> {
 /// that could change what the screen shows — anything but a file being
 /// opened, read or closed. On Linux notify reports every open, the Walks' own
 /// among them, and taken for changes they would have the Sources read again
-/// for ever. A watch that failed may have missed something, so it counts.
+/// for ever. A watch that failed may have missed something, so it counts —
+/// and one the system refused at its limit is said apart.
 fn tell(to_loop: Sender<Message>) -> impl FnMut(notify::Result<notify::Event>) + Send + 'static {
     move |event| {
-        if !matches!(&event, Ok(e) if e.kind.is_access()) {
-            let _ = to_loop.send(Message::Changed);
-        }
+        let message = match &event {
+            Ok(e) if e.kind.is_access() => return,
+            Err(e) if matches!(e.kind, notify::ErrorKind::MaxFilesWatch) => Message::Limited,
+            _ => Message::Changed,
+        };
+        let _ = to_loop.send(message);
     }
 }
 
@@ -1087,7 +1131,9 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
 
     loop {
         if let Some(watcher) = &mut watcher {
-            rewatch(watcher, &mut watching, app.watched());
+            if rewatch(watcher, &mut watching, app.watched()) {
+                app.limited();
+            }
         }
         app.tick(Instant::now());
         terminal.draw(|frame| app.render(frame))?;
@@ -1108,6 +1154,13 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
         };
         let event = match message {
             Message::Changed => {
+                app.changed(Instant::now());
+                continue;
+            }
+            // A directory appeared that could not be watched: it is read
+            // again as any change is, and the screen says what it missed.
+            Message::Limited => {
+                app.limited();
                 app.changed(Instant::now());
                 continue;
             }
@@ -1940,6 +1993,61 @@ mod tests {
     }
 
     #[test]
+    fn a_watch_the_system_refused_is_said_and_stays_said() {
+        let mut app = alpha("tui-limited");
+        app.limited();
+        assert!(bottom_row(&mut app).ends_with("watch limit reached "));
+        // No watcher at all says more, and is not taken back by a refusal.
+        app.unwatched();
+        app.limited();
+        assert!(bottom_row(&mut app).ends_with("not watching for changes "));
+    }
+
+    /// A watcher that refuses every path, as notify does when the system
+    /// will not take another watch — or, `at_limit` false, when a path is
+    /// not there.
+    struct Refusing {
+        at_limit: bool,
+    }
+
+    impl Watcher for Refusing {
+        fn new<F: notify::EventHandler>(_: F, _: notify::Config) -> notify::Result<Self> {
+            Err(notify::Error::generic("made by hand in the tests"))
+        }
+        fn watch(&mut self, _: &Path, _: RecursiveMode) -> notify::Result<()> {
+            let kind = if self.at_limit { notify::ErrorKind::MaxFilesWatch } else { notify::ErrorKind::PathNotFound };
+            Err(notify::Error::new(kind))
+        }
+        fn unwatch(&mut self, _: &Path) -> notify::Result<()> {
+            Ok(())
+        }
+        fn kind() -> notify::WatcherKind {
+            notify::WatcherKind::NullWatcher
+        }
+    }
+
+    #[test]
+    fn a_watch_refused_at_the_systems_limit_is_handed_back_and_one_not_there_is_not() {
+        // Found in review: on Linux at the limit of inotify watches, the
+        // refusal was dropped with every other, and the screen said nothing.
+        let wanted = vec![(PathBuf::from("rules"), false), (PathBuf::from("skills"), true)];
+        let mut watching = Vec::new();
+        assert!(rewatch(&mut Refusing { at_limit: true }, &mut watching, wanted.clone()));
+        assert!(watching.is_empty());
+        assert!(!rewatch(&mut Refusing { at_limit: false }, &mut watching, wanted));
+    }
+
+    #[test]
+    fn a_directory_notify_could_not_watch_is_told_as_the_limit() {
+        let (to_loop, messages) = mpsc::channel();
+        let mut told = tell(to_loop);
+        told(Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch)));
+        assert!(matches!(messages.try_recv(), Ok(Message::Limited)));
+        told(Err(notify::Error::generic("a watch was lost")));
+        assert!(matches!(messages.try_recv(), Ok(Message::Changed)));
+    }
+
+    #[test]
     fn nothing_copied_says_nothing() {
         let mut app = alpha("tui-copied-not");
         drag_across(&mut app, (70, 4), (80, 4));
@@ -2267,6 +2375,26 @@ mod tests {
         rewatch(&mut watcher, &mut watching, app.watched());
         write(&target.join("SKILL.md"), "---\nname: linked, changed\n---\n");
         assert!(heard(&messages, ARRIVES), "a change behind a link that came back is unheard");
+    }
+
+    #[test]
+    fn a_watched_file_read_again_is_not_heard() {
+        // Every Walk opens and reads the files it shows. On Linux notify
+        // reports each open; taken for a change, it would set off the next
+        // Walk, for ever. Windows does not report them — this fails only
+        // where it can.
+        let dir = scratch("tui-watch-read");
+        write(&dir.join("one.md"), "# one\n");
+        let mut app = app(vec![Source::new("rules", dir.clone(), Scope::Global, Walk::MarkdownFiles)]);
+        let (to_loop, messages) = mpsc::channel();
+        let mut watcher = watcher(to_loop).unwrap();
+        let mut watching = Vec::new();
+        rewatch(&mut watcher, &mut watching, app.watched());
+
+        app.reload();
+        assert!(!heard(&messages, Duration::from_millis(500)), "reading was heard as a change");
+        write(&dir.join("one.md"), "# changed\n");
+        assert!(heard(&messages, ARRIVES), "a change was not heard");
     }
 
     #[test]
