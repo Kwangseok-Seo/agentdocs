@@ -112,7 +112,10 @@ pub fn reason(kind: io::ErrorKind) -> &'static str {
 /// A walked Source's line: its name and how many Entries it holds — how many
 /// were kept out of the whole, when searching — and how many things could not
 /// be read. The listing and the screen both print it, so there is one wording.
+/// A Source's name can come out of a config file somebody else wrote, so it
+/// passes through `printable`.
 pub fn heading(name: &str, walked: &Walked, terms: &[String]) -> String {
+    let name = printable(name);
     let entries = walked.entries();
     let total = entries.len();
     let mut heading = if terms.is_empty() {
@@ -135,9 +138,10 @@ fn unread_row(path: &Path, why: io::ErrorKind) -> String {
     format!("    {} ({})", printable(&path.to_string_lossy()), reason(why))
 }
 
-/// A Source that could not be walked at all: its name and why.
+/// A Source that could not be walked at all: its name, through `printable`
+/// as in `heading`, and why.
 pub fn failed(name: &str, err: &io::Error) -> String {
-    format!("  {}:({})", name, reason(err.kind()))
+    format!("  {}:({})", printable(name), reason(err.kind()))
 }
 
 /// A config file that could not be used: its name and why, in the place of
@@ -150,12 +154,22 @@ pub fn unused(problem: &Problem) -> String {
     format!("  {}:({why})", config::FILE)
 }
 
-/// What stopped a config file being used, one line of the listing per line
-/// it says, under the file's row. The parser quotes the line of the file it
-/// stopped at, so it passes through `printable` like anything else out of a
-/// file.
+/// What stopped a config file being used, line by line, in the words of what
+/// stopped it — the parser's, which quote the line of the file it stopped
+/// at. A file that would not read has nothing more than its row's reason:
+/// the system's words come in the machine's language, so the reason is said
+/// in words of our own, as for anything else that would not read.
+///
+/// The parser counts a tab in the quoted line as one column, as it counts
+/// every character, and a tab is a control character that the terminal would
+/// never be given; a space in its place keeps the `^` under what it marks.
 pub fn unused_said(problem: &Problem) -> Vec<String> {
-    problem.to_string().lines().map(|line| format!("    {}", printable(line))).collect()
+    match problem {
+        Problem::Read(_) => Vec::new(),
+        Problem::Parse(_) | Problem::Order(_) => {
+            problem.to_string().lines().map(|line| line.replace('\t', " ")).collect()
+        }
+    }
 }
 
 /// One Entry's line on screen: the name it is known by, and as much of its

@@ -14,7 +14,7 @@ use std::env;
 use std::io::{self, IsTerminal, Write};
 
 use crate::config::Problem;
-use crate::listing::{failed, listing, unused, unused_said};
+use crate::listing::{failed, listing, printable, unused, unused_said};
 use crate::source::{Scope, Source, Walk, find_project_root};
 
 /// The words to search for: every argument after the program's own path,
@@ -158,12 +158,13 @@ fn write_listing(
 }
 
 /// The row of each config file of `scope` that could not be used, and under
-/// it what the parser said.
+/// it what stopped it. That quotes a line of the file, which passes through
+/// `printable` like anything else out of a file.
 fn write_unused(out: &mut impl Write, problems: &[(Scope, Problem)], scope: Scope) -> io::Result<()> {
     for (_, problem) in problems.iter().filter(|(of, _)| *of == scope) {
         writeln!(out, "{}", unused(problem))?;
         for line in unused_said(problem) {
-            writeln!(out, "{line}")?;
+            writeln!(out, "    {}", printable(&line))?;
         }
     }
     Ok(())
@@ -305,18 +306,15 @@ mod tests {
     }
 
     #[test]
-    fn a_config_file_that_will_not_read_says_what_the_system_said() {
-        // The row's reason is one of four words; what the system said is
-        // more, and goes under it as the parser's words do.
+    fn a_config_file_that_will_not_read_says_why_in_words_of_its_own_and_no_more() {
+        // What the system says comes in the machine's language, as `reason`
+        // explains; the row's word is ours.
         let dir = scratch("main-unreadable");
         std::fs::write(dir.join(config::FILE), [0xff, 0xfe, 0x00]).unwrap();
         let Err(problem) = config::add(&dir, &dir, Scope::Global, &mut Vec::new()) else { panic!("read as text") };
 
         let lines = written_with(&[], &[(Scope::Global, problem)]);
-        assert_eq!(
-            lines,
-            ["GLOBAL", "  .agentdocs.toml:(unreadable)", "    stream did not contain valid UTF-8", "PROJECT here"]
-        );
+        assert_eq!(lines, ["GLOBAL", "  .agentdocs.toml:(unreadable)", "PROJECT here"]);
     }
 
     #[test]
@@ -331,6 +329,30 @@ mod tests {
                 "PROJECT here",
             ]
         );
+    }
+
+    #[test]
+    fn a_tab_in_the_quoted_line_keeps_the_mark_under_what_it_marks() {
+        let said = written_with(&[], &[(Scope::Global, problem("main-tab", "[[source]]\nname = \"s\"\npath = \"s\"\nwalk =\t\t\"tree\"\n"))]);
+        let quoted = said.iter().position(|line| line.contains("| walk")).unwrap();
+        let value = said[quoted].find("\"tree\"").unwrap();
+        let mark = said[quoted + 1].find('^').unwrap();
+        assert_eq!(mark, value, "{said:?}");
+    }
+
+    #[test]
+    fn a_sources_name_from_a_config_file_passes_through_printable() {
+        // An escape would clear the terminal, and a carriage return send the
+        // rest of the row back over the start of it.
+        let dir = scratch("main-escape-name");
+        write(&dir.join("docs").join("one.md"), "# one\n");
+        let sources = [
+            Source::new("\u{1b}[2Jnotes\r", dir.join("docs"), Scope::Global, Walk::MarkdownFiles),
+            Source::new("gone\u{1b}[31m", dir.join("nowhere"), Scope::Global, Walk::MarkdownFiles),
+        ];
+        let lines = written(&sources);
+        assert_eq!(lines[1], "  [2Jnotes:1");
+        assert_eq!(lines[3], "  gone[31m:(missing)");
     }
 
     #[test]

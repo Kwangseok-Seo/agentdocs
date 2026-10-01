@@ -64,8 +64,12 @@ pub enum Problem {
 /// came. With no such file nothing changes; a file that is there but cannot
 /// be used changes nothing either, and says why instead.
 pub fn add(dir: &Path, home: &Path, scope: Scope, sources: &mut Vec<Source>) -> Result<(), Problem> {
-    let text = match fs::read_to_string(dir.join(FILE)) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+    let path = dir.join(FILE);
+    // Not found is no file only when nothing at all is there: a link whose
+    // target is gone is not found either, and is something — as a Walk lists
+    // one rather than dropping it.
+    let text = match fs::read_to_string(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound && fs::symlink_metadata(&path).is_err() => return Ok(()),
         read => read?,
     };
     let file: File = toml::from_str(&text)?;
@@ -323,6 +327,25 @@ mod tests {
         match sources(&dir, &dir, Scope::Global) {
             Err(Problem::Read(e)) => assert_eq!(e.kind(), io::ErrorKind::InvalidData),
             _ => panic!("expected a read problem"),
+        }
+    }
+
+    #[test]
+    fn a_link_whose_target_is_gone_is_a_read_problem_not_no_file() {
+        // A dotfile manager links `~/.agentdocs.toml` to a file it keeps
+        // elsewhere. With that file gone something is still there, and taken
+        // for no file at all it would add nothing and say nothing.
+        let dir = scratch("config-dangling");
+        let target = dir.join("kept").join("agentdocs.toml");
+        write(&target, "[[source]]\nname = \"s\"\npath = \"s\"\nwalk = \"markdown-tree\"\n");
+        if !link_file(&target, &dir.join(FILE)) {
+            return;
+        }
+        fs::remove_file(&target).unwrap();
+        match sources(&dir, &dir, Scope::Global) {
+            Err(Problem::Read(e)) => assert_eq!(e.kind(), io::ErrorKind::NotFound),
+            Err(other) => panic!("expected a read problem, got {other}"),
+            Ok(sources) => panic!("taken for no file: {} Sources", sources.len()),
         }
     }
 

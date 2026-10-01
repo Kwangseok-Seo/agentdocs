@@ -27,7 +27,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::config::Problem;
 use crate::editor;
 use crate::entry::{Entry, EntryKind, Node};
-use crate::listing::{failed, heading, printable, reason, unused};
+use crate::listing::{failed, heading, printable, reason, unused, unused_said};
 use crate::markdown;
 use crate::source::{Scope, Source, Walked, same};
 
@@ -821,7 +821,12 @@ impl App {
     /// or, for a config file that could not be used, what stopped it.
     fn preview_lines(&self, width: u16) -> Vec<Line<'_>> {
         if let Some(problem) = self.problem() {
-            return problem.to_string().lines().flat_map(|line| markdown::note(line.to_string(), width)).collect();
+            return match problem {
+                Problem::Read(e) => markdown::note(format!("(this could not be read: {})", reason(e.kind())), width),
+                Problem::Parse(_) | Problem::Order(_) => {
+                    unused_said(problem).into_iter().flat_map(|line| markdown::note(line, width)).collect()
+                }
+            };
         }
         match self.entry() {
             Some(entry) => match (&entry.text, entry.doc()) {
@@ -868,10 +873,12 @@ impl App {
             block = block.title_top(Line::from(shown).right_aligned());
         }
         frame.render_widget(Paragraph::new(lines).block(block), area);
+        // Only a file keeps a place. A note, however tall, cannot be
+        // scrolled, so it is already as far as it goes.
+        self.furthest = if path.is_some() { most } else { 0 };
         if let Some(path) = path {
             self.scrolled.insert(path, top);
         }
-        self.furthest = most;
 
         let Some(selection) = &mut self.selection else { return };
         if selection.phase == Phase::Pressed || inner.is_empty() {
@@ -1583,6 +1590,20 @@ mod tests {
         assert_eq!(first_row(&mut app), "• 2");
         app.tick(start + AUTOSCROLL_EVERY);
         assert_eq!(first_row(&mut app), "• 3");
+    }
+
+    #[test]
+    fn a_drag_held_below_a_note_taller_than_the_preview_wakes_nothing() {
+        // A config file's words are a note: taller than this preview, and with
+        // no place to scroll, so there is nothing to wake the loop for.
+        let mut app = with_unused_config("tui-note-drag", "[[source]]\nname = \"s\"\npath = \"s\"\nwalk = \"tree\"\n");
+        press(&mut app, &[KeyCode::Char('j')]);
+        draw(&mut app, 120, 6);
+        app.click(61, 1);
+        app.drag(70, 5);
+        draw(&mut app, 120, 6);
+        assert_eq!(app.autoscroll(), None);
+        assert_eq!(app.wake_in(Instant::now()), None);
     }
 
     #[test]
@@ -2300,6 +2321,22 @@ mod tests {
     }
 
     #[test]
+    fn the_preview_of_a_config_file_that_will_not_read_says_so_in_words_of_its_own() {
+        let dir = scratch("tui-unused-unread");
+        std::fs::write(dir.join(config::FILE), [0xff, 0xfe, 0x00]).unwrap();
+        let Err(problem) = config::add(&dir, &dir, Scope::Global, &mut Vec::new()) else { panic!("read as text") };
+        let mut app = App::new(
+            vec![Source::new("rules", dir.join("rules"), Scope::Global, Walk::MarkdownFiles)],
+            vec![(Scope::Global, problem)],
+            "GLOBAL".to_string(),
+            "PROJECT here".to_string(),
+        );
+        press(&mut app, &[KeyCode::Char('j')]);
+        let rows = screen(&mut app, 120, 6).join("\n");
+        assert!(rows.contains("(this could not be read: unreadable)"), "{rows}");
+    }
+
+    #[test]
     fn the_preview_of_a_config_file_that_cannot_be_used_is_what_stopped_it() {
         let mut app = with_unused_config("tui-unused-preview", "[[source]]\nname = \"s\"\npath = \"s\"\nwalk = \"tree\"\n");
         press(&mut app, &[KeyCode::Char('j')]);
@@ -2381,6 +2418,19 @@ mod tests {
         let rows = screen(&mut app, 100, 8).join("\n");
         assert!(rows.contains("leftrightgap"), "{rows}");
         assert!(!rows.contains(FORMAT), "{rows:?}");
+    }
+
+    #[test]
+    fn a_format_character_in_a_sources_name_never_reaches_the_screen() {
+        // A Source's name can come out of a config file somebody else wrote.
+        let dir = scratch("tui-format-source");
+        let mut app = app(vec![
+            Source::new("left\u{202e}right", dir.clone(), Scope::Global, Walk::MarkdownFiles),
+            Source::new("gone\u{200b}", dir.join("nope"), Scope::Global, Walk::MarkdownFiles),
+        ]);
+        let rows = screen(&mut app, 100, 8).join("\n");
+        assert!(rows.contains("leftright:0") && rows.contains("gone:(missing)"), "{rows}");
+        assert!(!rows.contains(FORMAT) && !rows.contains('\u{200b}'), "{rows:?}");
     }
 
     #[test]
