@@ -167,6 +167,16 @@ jobs:
             test "$("$HOME/.local/bin/agentdocs" --version)" = "agentdocs ${GITHUB_REF_NAME#v}"
           done
 
+      # A shell under Rosetta is told x86_64; the Mac is arm64, and gets its
+      # own binary all the same.
+      - name: install.sh under Rosetta
+        if: runner.os == 'macOS'
+        run: |
+          softwareupdate --install-rosetta --agree-to-license
+          rm -rf "$HOME/.local/bin/agentdocs"
+          arch -x86_64 sh -c 'uname -m; sh install.sh'
+          file "$HOME/.local/bin/agentdocs" | grep arm64
+
       - name: install.ps1
         if: runner.os == 'Windows'
         shell: pwsh
@@ -175,10 +185,12 @@ jobs:
           (Get-Content -Raw "site/releases/latest/download/install.ps1") -replace 'https://github.com/Kwangseok-Seo/agentdocs', 'http://127.0.0.1:8000' |
             Set-Content install.ps1
           $before = [Environment]::GetEnvironmentVariable('Path', 'User')
-          foreach ($version in @('', $env:GITHUB_REF_NAME)) {
-            $env:AGENTDOCS_VERSION = $version
+          foreach ($v in @('', $env:GITHUB_REF_NAME)) {
+            $env:AGENTDOCS_VERSION = $v
             Get-Content -Raw install.ps1 | Invoke-Expression
           }
+          # `iex` runs it in this scope, and it leaves nothing here.
+          if (Test-Path variable:target) { throw "the script left `$target behind" }
           $exe = Join-Path $env:LOCALAPPDATA 'Programs\agentdocs\bin\agentdocs.exe'
           $said = & $exe --version
           if ($said -ne "agentdocs $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "the binary says $said" }

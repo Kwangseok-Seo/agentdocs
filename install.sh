@@ -24,6 +24,11 @@ case "$(uname -m)" in
     aarch64 | arm64) arch=aarch64 ;;
     *) fail "there is no release for $(uname -m); cargo can build one: cargo install --git $repo" ;;
 esac
+# A shell running under Rosetta on Apple silicon is told x86_64. The Mac is
+# arm64 all the same, and its own binary is the one to install.
+if [ "$os" = apple-darwin ] && [ "$arch" = x86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; then
+    arch=aarch64
+fi
 target="$arch-$os"
 archive="agentdocs-$target.tar.gz"
 if [ "$version" = latest ]; then
