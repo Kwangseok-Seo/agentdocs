@@ -1,0 +1,5 @@
+# The C runtime linked into the Windows binary rather than loaded from
+# vcruntime140.dll, which a Windows without the Visual C++ redistributable
+# does not have. Here so that a local build is the one that is released.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

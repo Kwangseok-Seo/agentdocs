@@ -1,0 +1,207 @@
+name: Release
+
+# A tag `v<version>` builds the binaries, tries the install scripts on them,
+# and only then publishes them as a GitHub release. A tag with a `-` in it —
+# `v0.1.0-rc.1` — is published as a pre-release, which `latest` passes over.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, run: "" }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, run: qemu-aarch64-static }
+          - { target: x86_64-apple-darwin, os: macos-latest, run: "arch -x86_64" }
+          - { target: aarch64-apple-darwin, os: macos-latest, run: "" }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, run: "" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the tag against Cargo.toml
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::the tag is $GITHUB_REF_NAME, and Cargo.toml says $version"
+            exit 1
+          fi
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+          rustup default stable
+
+      # Linux's two targets are built on x86_64: the other needs a linker for
+      # aarch64, and an emulator to be run.
+      - name: Install the aarch64 linker and emulator
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user-static
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      # An Intel binary on an Apple silicon runner runs under Rosetta.
+      - name: Install Rosetta
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: softwareupdate --install-rosetta --agree-to-license
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      # The binary that will be published, run: it says the tag's version.
+      - name: Run it
+        shell: bash
+        run: |
+          said=$(${{ matrix.run }} target/${{ matrix.target }}/release/agentdocs --version)
+          echo "$said"
+          if [ "$said" != "agentdocs ${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::the binary says \"$said\""
+            exit 1
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          name=agentdocs-${{ matrix.target }}
+          mkdir "$name"
+          cp README.md LICENSE-MIT LICENSE-APACHE "$name/"
+          if [ "$RUNNER_OS" = Windows ]; then
+            cp "target/${{ matrix.target }}/release/agentdocs.exe" "$name/"
+            pwsh -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$name.zip'"
+            echo "ARCHIVE=$name.zip" >> "$GITHUB_ENV"
+          else
+            cp "target/${{ matrix.target }}/release/agentdocs" "$name/"
+            tar -czf "$name.tar.gz" "$name"
+            echo "ARCHIVE=$name.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  # The archives, their checksums and the two install scripts: what the
+  # release will hold, put together once and used by both jobs below.
+  assemble:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cp install.sh install.ps1 dist/
+          cd dist
+          sha256sum -- * > ../SHA256SUMS
+          mv ../SHA256SUMS .
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+
+  # Each install script run as people will run it, against these files served
+  # from this machine in the layout GitHub serves them: only the repository's
+  # address in the script is changed.
+  try-installers:
+    needs: assemble
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: site/releases/download/${{ github.ref_name }}
+
+      - name: Serve the release
+        shell: bash
+        run: |
+          mkdir -p site/releases/latest
+          cp -r "site/releases/download/$GITHUB_REF_NAME" site/releases/latest/download
+          python=python3
+          if [ "$RUNNER_OS" = Windows ]; then python=python; fi
+          (cd site && "$python" -m http.server 8000 >/dev/null 2>&1 &)
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            curl -fsS -o /dev/null "http://127.0.0.1:8000/releases/latest/download/SHA256SUMS" && exit 0
+            sleep 1
+          done
+          echo "::error::the local server did not answer"
+          exit 1
+
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: |
+          sed 's#https://github.com/Kwangseok-Seo/agentdocs#http://127.0.0.1:8000#' \
+            "site/releases/latest/download/install.sh" > install.sh
+          for version in latest "$GITHUB_REF_NAME"; do
+            rm -rf "$HOME/.local/bin/agentdocs"
+            AGENTDOCS_VERSION=$version sh install.sh
+            test "$("$HOME/.local/bin/agentdocs" --version)" = "agentdocs ${GITHUB_REF_NAME#v}"
+          done
+
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          (Get-Content -Raw "site/releases/latest/download/install.ps1") -replace 'https://github.com/Kwangseok-Seo/agentdocs', 'http://127.0.0.1:8000' |
+            Set-Content install.ps1
+          $before = [Environment]::GetEnvironmentVariable('Path', 'User')
+          foreach ($version in @('', $env:GITHUB_REF_NAME)) {
+            $env:AGENTDOCS_VERSION = $version
+            Get-Content -Raw install.ps1 | Invoke-Expression
+          }
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\agentdocs\bin\agentdocs.exe'
+          $said = & $exe --version
+          if ($said -ne "agentdocs $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "the binary says $said" }
+          # Added to the user's PATH once, after what was there.
+          $after = [Environment]::GetEnvironmentVariable('Path', 'User')
+          $dir = Split-Path $exe
+          if ($after -ne "$before;$dir" -and $after -ne $dir) { throw "PATH went from '$before' to '$after'" }
+
+  publish:
+    needs: try-installers
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=
+          case "$GITHUB_REF_NAME" in *-*) prerelease=--prerelease ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag $prerelease
