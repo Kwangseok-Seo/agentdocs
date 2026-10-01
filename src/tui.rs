@@ -24,9 +24,10 @@ use ratatui::widgets::{Block, List, ListState, Paragraph, Widget};
 use ratatui::{DefaultTerminal, Frame};
 use unicode_width::UnicodeWidthStr;
 
+use crate::config::Problem;
 use crate::editor;
 use crate::entry::{Entry, EntryKind, Node};
-use crate::listing::{failed, heading, printable, reason};
+use crate::listing::{failed, heading, printable, reason, unused};
 use crate::markdown;
 use crate::source::{Scope, Source, Walked, same};
 
@@ -61,6 +62,9 @@ pub struct App {
     global: String,
     project: String,
     sources: Vec<(Source, io::Result<Walked>)>,
+    /// Each config file that could not be used, and the scope whose Sources
+    /// it would have added.
+    problems: Vec<(Scope, Problem)>,
     source: usize,
     entries: ListState,
     /// The directories and Bundles whose rows are showing, by path. Kept apart
@@ -251,7 +255,7 @@ fn clamp(at: Position, area: Rect) -> Position {
 impl App {
     /// Walk every Source once, before the screen opens: what it shows is what
     /// was on disk at that moment.
-    pub fn new(sources: Vec<Source>, global: String, project: String) -> Self {
+    pub fn new(sources: Vec<Source>, problems: Vec<(Scope, Problem)>, global: String, project: String) -> Self {
         let sources = sources
             .into_iter()
             .map(|src| {
@@ -264,6 +268,7 @@ impl App {
             global,
             project,
             sources,
+            problems,
             source: 0,
             entries: ListState::default().with_selected(Some(0)),
             open: HashSet::new(),
@@ -731,13 +736,16 @@ impl App {
     /// The Sources pane row by row: the scope headings, and under them a line
     /// for each Source, worded exactly as the listing words it, together with
     /// that Source's index. Drawing and clicking both read this, so a click
-    /// lands on the row that was drawn.
+    /// lands on the row that was drawn. A config file that could not be used
+    /// has a row at the end of its scope, where its Sources would have been,
+    /// and nothing to select.
     fn source_rows(&self) -> Vec<(String, Option<usize>)> {
         let mut rows = vec![(self.global.clone(), None)];
         let mut project_shown = false;
 
         for (i, (src, walked)) in self.sources.iter().enumerate() {
             if matches!(src.scope, Scope::Project) && !project_shown {
+                rows.extend(self.unused_rows(Scope::Global));
                 rows.push((self.project.clone(), None));
                 project_shown = true;
             }
@@ -748,9 +756,19 @@ impl App {
             rows.push((line, Some(i)));
         }
         if !project_shown {
+            rows.extend(self.unused_rows(Scope::Global));
             rows.push((self.project.clone(), None));
         }
+        rows.extend(self.unused_rows(Scope::Project));
         rows
+    }
+
+    /// The row of each config file of `scope` that could not be used.
+    fn unused_rows(&self, scope: Scope) -> impl Iterator<Item = (String, Option<usize>)> + '_ {
+        self.problems
+            .iter()
+            .filter(move |(of, _)| *of == scope)
+            .map(|(_, problem)| (unused(problem), None))
     }
 
     fn render_sources(&mut self, frame: &mut Frame, area: Rect) {
@@ -1075,6 +1093,7 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
     use crate::source::Walk;
     use crate::testutil::*;
     use ratatui::Terminal;
@@ -1097,7 +1116,7 @@ mod tests {
     }
 
     fn app(sources: Vec<Source>) -> App {
-        App::new(sources, "GLOBAL".to_string(), "PROJECT here".to_string())
+        App::new(sources, Vec::new(), "GLOBAL".to_string(), "PROJECT here".to_string())
     }
 
     /// Two Sources to move between: three rules, and one that is not there.
@@ -2209,6 +2228,37 @@ mod tests {
         let mut app = app(vec![Source::new("rules", dir, Scope::Global, Walk::MarkdownFiles)]);
         let rows = screen(&mut app, 100, 8).join("\n");
         assert!(rows.contains("PROJECT here"), "{rows}");
+    }
+
+    #[test]
+    fn a_config_file_that_cannot_be_used_is_a_row_at_the_end_of_its_scope_that_j_passes_over() {
+        let dir = scratch("tui-unused");
+        write(&dir.join(config::FILE), "[[sources]]\n");
+        let Err(problem) = config::sources(&dir, &dir, Scope::Global) else { panic!("could be used") };
+        let mut app = App::new(
+            vec![
+                Source::new("rules", dir.join("rules"), Scope::Global, Walk::MarkdownFiles),
+                Source::new("docs", dir.join("docs"), Scope::Project, Walk::MarkdownTree),
+            ],
+            vec![(Scope::Global, problem)],
+            "GLOBAL".to_string(),
+            "PROJECT here".to_string(),
+        );
+
+        let rows: Vec<(String, Option<usize>)> = app.source_rows();
+        assert_eq!(
+            rows,
+            [
+                ("GLOBAL".to_string(), None),
+                ("  rules:(missing)".to_string(), Some(0)),
+                ("  .agentdocs.toml:(invalid)".to_string(), None),
+                ("PROJECT here".to_string(), None),
+                ("  docs:(missing)".to_string(), Some(1)),
+            ]
+        );
+
+        press(&mut app, &[KeyCode::Char('j')]);
+        assert_eq!(app.source, 1);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod config;
 mod editor;
 mod entry;
 mod frontmatter;
@@ -12,7 +13,8 @@ mod testutil;
 use std::env;
 use std::io::{self, IsTerminal, Write};
 
-use crate::listing::{failed, listing};
+use crate::config::Problem;
+use crate::listing::{failed, listing, unused, unused_said};
 use crate::source::{Scope, Source, Walk, find_project_root};
 
 /// The words to search for: every argument after the program's own path,
@@ -37,12 +39,17 @@ fn main() -> io::Result<()> {
     let terms = search_terms(env::args());
 
     let mut sources = Vec::new();
+    let mut problems = Vec::new();
     if let Some(home) = &home {
         sources.push(Source::new("skills", home.join(".claude").join("skills"), Scope::Global, Walk::BundleDirs));
         sources.push(Source::new("rules", home.join(".claude").join("rules"), Scope::Global, Walk::MarkdownFiles));
         sources.push(Source::new("agents", home.join(".claude").join("agents"), Scope::Global, Walk::MarkdownFiles));
         sources.push(Source::new("commands", home.join(".claude").join("commands"), Scope::Global, Walk::MarkdownFiles));
         sources.push(Source::new("agents/skills", home.join(".agents").join("skills"), Scope::Global, Walk::BundleDirs));
+        match config::sources(home, home, Scope::Global) {
+            Ok(mut written) => sources.append(&mut written),
+            Err(problem) => problems.push((Scope::Global, problem)),
+        }
     }
 
     let root = match (&cwd, &home) {
@@ -50,9 +57,13 @@ fn main() -> io::Result<()> {
         _ => None,
     };
 
-    if let Some(r) = &root {
+    if let (Some(r), Some(home)) = (&root, &home) {
         sources.push(Source::new("root md", r.clone(), Scope::Project, Walk::MarkdownFiles));
         sources.push(Source::new("docs", r.join("docs"), Scope::Project, Walk::MarkdownTree));
+        match config::sources(r, home, Scope::Project) {
+            Ok(mut written) => sources.append(&mut written),
+            Err(problem) => problems.push((Scope::Project, problem)),
+        }
     }
 
     let global_header = match &home {
@@ -75,11 +86,11 @@ fn main() -> io::Result<()> {
             Some(r) => format!("PROJECT {}", r.file_name().unwrap_or(r.as_os_str()).to_string_lossy()),
             None => project_header,
         };
-        let app = tui::App::new(sources, global_header, project_title);
+        let app = tui::App::new(sources, problems, global_header, project_title);
         return tui::open(app);
     }
 
-    print_listing(&mut io::stdout().lock(), &global_header, &project_header, &sources, &terms)
+    print_listing(&mut io::stdout().lock(), &global_header, &project_header, &sources, &problems, &terms)
 }
 
 /// Print the listing to `out`. Whoever reads it may stop early — `| head`,
@@ -90,9 +101,10 @@ fn print_listing(
     global: &str,
     project: &str,
     sources: &[Source],
+    problems: &[(Scope, Problem)],
     terms: &[String],
 ) -> io::Result<()> {
-    match write_listing(out, global, project, sources, terms) {
+    match write_listing(out, global, project, sources, problems, terms) {
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         other => other,
     }
@@ -100,12 +112,15 @@ fn print_listing(
 
 /// The listing itself: the global heading, then every Source with its
 /// Entries, and the project heading just before the first project Source —
-/// or last, when there is none. The first write that fails ends it.
+/// or last, when there is none. A config file that could not be used is
+/// last in its scope, where its Sources would have been. The first write
+/// that fails ends it.
 fn write_listing(
     out: &mut impl Write,
     global: &str,
     project: &str,
     sources: &[Source],
+    problems: &[(Scope, Problem)],
     terms: &[String],
 ) -> io::Result<()> {
     writeln!(out, "{global}")?;
@@ -114,6 +129,7 @@ fn write_listing(
     for src in sources {
         if let Scope::Project = src.scope {
             if !project_shown {
+                write_unused(out, problems, Scope::Global)?;
                 writeln!(out, "{project}")?;
                 project_shown = true;
             }
@@ -130,14 +146,29 @@ fn write_listing(
     }
 
     if !project_shown {
+        write_unused(out, problems, Scope::Global)?;
         writeln!(out, "{project}")?;
     }
+    write_unused(out, problems, Scope::Project)?;
     out.flush()
+}
+
+/// The row of each config file of `scope` that could not be used, and under
+/// it what the parser said.
+fn write_unused(out: &mut impl Write, problems: &[(Scope, Problem)], scope: Scope) -> io::Result<()> {
+    for (_, problem) in problems.iter().filter(|(of, _)| *of == scope) {
+        writeln!(out, "{}", unused(problem))?;
+        for line in unused_said(problem) {
+            writeln!(out, "{line}")?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config;
     use crate::testutil::*;
 
     // ------------------------------------------------------------ search_terms
@@ -192,7 +223,7 @@ mod tests {
 
     fn written(sources: &[Source]) -> Vec<String> {
         let mut out = Vec::new();
-        write_listing(&mut out, "GLOBAL", "PROJECT here", sources, &[]).unwrap();
+        write_listing(&mut out, "GLOBAL", "PROJECT here", sources, &[], &[]).unwrap();
         String::from_utf8(out).unwrap().lines().map(String::from).collect()
     }
 
@@ -222,6 +253,71 @@ mod tests {
         assert_eq!(written(&sources).last().map(String::as_str), Some("PROJECT here"));
     }
 
+    /// What reading a config file that says `text` gives, when it cannot be
+    /// used.
+    fn problem(name: &str, text: &str) -> Problem {
+        let dir = scratch(name);
+        write(&dir.join(config::FILE), text);
+        match config::sources(&dir, &dir, Scope::Global) {
+            Err(problem) => problem,
+            Ok(_) => panic!("{text:?} could be used"),
+        }
+    }
+
+    fn written_with(sources: &[Source], problems: &[(Scope, Problem)]) -> Vec<String> {
+        let mut out = Vec::new();
+        write_listing(&mut out, "GLOBAL", "PROJECT here", sources, problems, &[]).unwrap();
+        String::from_utf8(out).unwrap().lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn a_config_file_that_cannot_be_used_is_last_in_its_scope_with_what_was_said() {
+        let problems = [
+            (Scope::Project, problem("main-badproject", "[[source]]\nname = \"s\"\npath = \"s\"\nwalk = \"tree\"\n")),
+            (Scope::Global, problem("main-badglobal", "[[sources]]\n")),
+        ];
+        assert_eq!(
+            written_with(&two_sources("main-unused"), &problems),
+            [
+                "GLOBAL",
+                "  rules:1",
+                "    one                              -",
+                "  .agentdocs.toml:(invalid)",
+                "    TOML parse error at line 1, column 3",
+                "      |",
+                "    1 | [[sources]]",
+                "      |   ^^^^^^^",
+                "    unknown field `sources`, expected `source`",
+                "PROJECT here",
+                "  docs:(missing)",
+                "  .agentdocs.toml:(invalid)",
+                "    TOML parse error at line 4, column 8",
+                "      |",
+                "    4 | walk = \"tree\"",
+                "      |        ^^^^^^",
+                "    unknown variant `tree`, expected one of `markdown-files`, `bundle-dirs`, `markdown-tree`",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_config_file_that_will_not_read_says_why_and_no_more() {
+        let dir = scratch("main-unreadable");
+        std::fs::write(dir.join(config::FILE), [0xff, 0xfe, 0x00]).unwrap();
+        let Err(problem) = config::sources(&dir, &dir, Scope::Global) else { panic!("read as text") };
+
+        let lines = written_with(&[], &[(Scope::Global, problem)]);
+        assert_eq!(lines, ["GLOBAL", "  .agentdocs.toml:(unreadable)", "PROJECT here"]);
+    }
+
+    #[test]
+    fn the_line_a_config_file_is_quoted_by_passes_through_printable() {
+        // The parser quotes the line it stopped at, and the line is the file's.
+        let said = written_with(&[], &[(Scope::Global, problem("main-escape", "\u{1b}[31m = 1\n"))]);
+        assert!(said.iter().any(|line| line.contains("[31m = 1")), "{said:?}");
+        assert!(said.iter().all(|line| !line.contains('\u{1b}')), "{said:?}");
+    }
+
     /// Takes `room` bytes and then refuses with `kind` — the way a pipe does
     /// once `| head` has read enough and gone.
     struct StopsAfter {
@@ -247,14 +343,14 @@ mod tests {
     #[test]
     fn a_reader_that_stops_early_is_not_an_error() {
         let mut out = StopsAfter { room: 10, kind: io::ErrorKind::BrokenPipe };
-        let result = print_listing(&mut out, "GLOBAL", "PROJECT here", &two_sources("main-pipe"), &[]);
+        let result = print_listing(&mut out, "GLOBAL", "PROJECT here", &two_sources("main-pipe"), &[], &[]);
         assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
     fn any_other_failure_to_write_still_is() {
         let mut out = StopsAfter { room: 10, kind: io::ErrorKind::PermissionDenied };
-        let result = print_listing(&mut out, "GLOBAL", "PROJECT here", &two_sources("main-denied"), &[]);
+        let result = print_listing(&mut out, "GLOBAL", "PROJECT here", &two_sources("main-denied"), &[], &[]);
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
     }
 }

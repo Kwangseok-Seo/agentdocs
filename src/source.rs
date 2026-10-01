@@ -2,13 +2,21 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+
 use crate::entry::{Entry, EntryKind, Node, gather, unread};
 
+#[derive(Clone, Copy, PartialEq)]
 pub enum Scope {
     Global,
     Project,
 }
 
+/// How a Source is walked. A config file names one by its variant's name
+/// in kebab case — `walk = "markdown-tree"` — so the names written there are
+/// these and no others.
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Walk {
     MarkdownFiles,
     BundleDirs,

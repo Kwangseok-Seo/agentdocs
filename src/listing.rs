@@ -4,6 +4,7 @@ use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use crate::config::{self, Problem};
 use crate::entry::Entry;
 use crate::source::Walked;
 
@@ -137,6 +138,27 @@ fn unread_row(path: &Path, why: io::ErrorKind) -> String {
 /// A Source that could not be walked at all: its name and why.
 pub fn failed(name: &str, err: &io::Error) -> String {
     format!("  {}:({})", name, reason(err.kind()))
+}
+
+/// A config file that could not be used: its name and why, in the place of
+/// the Sources it would have added. The listing and the screen both print it.
+pub fn unused(problem: &Problem) -> String {
+    let why = match problem {
+        Problem::Read(e) => reason(e.kind()),
+        Problem::Parse(_) => "invalid",
+    };
+    format!("  {}:({why})", config::FILE)
+}
+
+/// What the parser said of a config file it could not use, one line of the
+/// listing per line it said, under the file's row. It quotes the line of the
+/// file it stopped at, so it passes through `printable` like anything else
+/// out of a file.
+pub fn unused_said(problem: &Problem) -> Vec<String> {
+    match problem {
+        Problem::Read(_) => Vec::new(),
+        Problem::Parse(e) => e.to_string().lines().map(|line| format!("    {}", printable(line))).collect(),
+    }
 }
 
 /// One Entry's line on screen: the name it is known by, and as much of its
