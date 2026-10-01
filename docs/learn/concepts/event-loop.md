@@ -4,6 +4,8 @@ A terminal program with a screen is one loop: **draw everything, wait for someth
 
 ## The loop
 
+As M8 left it:
+
 ```rust
 fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
     loop {
@@ -34,6 +36,39 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
 
 `event::read()` blocks until a key, a mouse event or a resize arrives, so a screen nobody touches uses no CPU. `q` is the only way out: `return Ok(())` leaves the loop, and the caller hands the terminal back.
 
+## Waiting for two things (M9)
+
+Since M9 the loop also waits for a file to change, and `event::read()` cannot wait for that. The terminal is read on a thread of its own, notify hears from the system on its, and both send to one channel ([[threads]], [[channels]]). The top of the loop is the same; the wait becomes:
+
+```rust
+let waited = match app.wake_in(Instant::now()) {
+    Some(wait) => messages.recv_timeout(wait),
+    None => messages.recv().map_err(RecvTimeoutError::from),
+};
+let message = match waited {
+    Ok(message) => message,
+    Err(RecvTimeoutError::Timeout) => continue,
+    Err(RecvTimeoutError::Disconnected) => return Err(io::Error::other("nothing left to wait for")),
+};
+let event = match message {
+    Message::Changed => {
+        app.changed(Instant::now());
+        continue;
+    }
+    Message::Input(event) => event?,
+};
+// … the same match on the event as before, and then:
+let _ = go_on.send(());
+```
+
+A change does not redraw anything by itself. `changed` notes a moment 100 ms ahead, if none is noted yet, and `wake_in` counts it among what is due; when it comes, `tick` walks every Source again. One save arrives as several reports — eight, for a file written beside the old one and renamed over it — and is read once. What a Walk finds replaces what the screen has only where the two differ, so a change the screen does not show leaves everything where it was, text dragged over included ([[state]]). Driven in a real console, a file written by another program was on screen 118 to 128 ms later, over ten runs ([[testing]]).
+
+A screen nobody touches still polls nothing: the thread reading the terminal waits in `read()`, notify's waits on the system, and the loop waits on the channel.
+
+## Handing the terminal to an editor (M9)
+
+`e` runs an editor in the same terminal ([[processes]]). The screen takes down what it set up — mouse reporting first, then raw mode and the alternate screen, as `open` does on the way out — waits for the editor, and sets them up again in the order `open` does. Then `terminal.clear()`: ratatui remembers the last frame it sent, and after the editor it would send only what changed since then — 25 bytes, where a first frame sends 1,306 — to a screen that came back blank. `clear` empties the screen and that memory both, so the next frame is sent whole.
+
 ## State changes; drawing reads
 
 `App` holds what is selected and focused. The loop turns each event into a method call — `handle(key)`, `click(column, row)`, `drag`, `wheel`, `release` — and hands `tick` the time on every turn; those are the only places the state changes. `render` only reads it, apart from noting where it drew each pane, which the mouse needs — a click at column 35 means nothing until you know which pane was drawn there — and, since M8, writing back two things only drawing knows: how far down a file can scroll, and where a drag has got to when the text moved under a pointer that did not ([[state]]). Because the loop itself decides nothing, every one of those methods can be tested with a terminal made of memory ([[testing]]).
@@ -56,7 +91,7 @@ Capture has a price: the terminal's own selection now works only while Shift is 
 
 ## Waking up without an event
 
-"copied to clipboard" has to disappear two seconds later even if nobody touches anything, and `read()` would wait forever. `event::poll(wait)` waits **at most** `wait`: `true` if an event came, `false` if the time ran out. While the notice shows, the loop polls for exactly the time it has left and, on `false`, goes round again — the `tick` at the top takes the notice down and the next draw shows the row without it.
+"copied to clipboard" has to disappear two seconds later even if nobody touches anything, and `read()` would wait forever. `event::poll(wait)` waits **at most** `wait`: `true` if an event came, `false` if the time ran out. While the notice shows, the loop polls for exactly the time it has left and, on `false`, goes round again — the `tick` at the top takes the notice down and the next draw shows the row without it. Since M9 the same wait is `recv_timeout` on the channel, and its `Timeout` is the `false`.
 
 M8 gave the loop a second reason to wake: a drag held above or below the preview scrolls it a row every 30 ms, herdr's interval, with the mouse standing still. `wake_in` answers with whichever is due sooner, or `None` when nothing is, and a screen nobody touches still uses no CPU. *Nothing is due* includes a preview already as far as it goes: until review caught it, a drag held above a file's first row woke the loop every 30 ms to draw the same screen — 29 of 33 drawings a second with no wait between them. Drawing now notes how far the preview can go, for `autoscroll` to ask.
 
@@ -66,8 +101,9 @@ A few things a terminal can do are asked for by writing an escape sequence betwe
 
 ## Pitfalls hit
 
+- **A frame taken to be sent whole every time (not settled).** Asked what the first frame after the editor shows without `terminal.clear()`, the answer was all three panes, since `render` draws everything; and later, how much is sent when a notice comes down, about 1,300 bytes, the whole screen. `render` does draw everything — into ratatui's memory — and ratatui sends what differs from the frame before: 25 bytes with nothing changed, 147 when a notice appears and 135 when it goes. The question had not been taught in the session before it was asked; it is how ratatui works rather than Rust, and was closed with the measurements above.
 - **The wheel moved the selection before any mouse code existed.** The guess was that the terminal, not knowing the program wanted the mouse, translated the wheel into arrow keys. The author tested it by scrolling over one pane while the other had the focus: the focused pane moved, which is what arrow keys do wherever the pointer is. Once capture was on, the wheel arrived as its own event, and the author decided it should move nothing for now.
 
 ## Related
 
-[[drop-and-unwinding]] · [[testing]] · [[enums-and-data]] · [[external-crates]] · [[closures]] · [[state]]
+[[drop-and-unwinding]] · [[testing]] · [[enums-and-data]] · [[external-crates]] · [[closures]] · [[state]] · [[threads]] · [[channels]] · [[processes]]

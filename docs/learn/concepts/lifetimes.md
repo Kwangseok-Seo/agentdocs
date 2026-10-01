@@ -156,6 +156,8 @@ error: lifetime may not live long enough
    |         ^^^^ this usage requires that `'1` must outlive `'static`
 ```
 
+A closure handed to another thread is asked for `'static` too — `thread::spawn` takes `F: FnOnce() -> T + Send + 'static` — since the thread may still be running when the function that made the closure has returned. A closure that borrows that function's variables cannot promise it; one that has taken them, with `move`, can ([[threads]]).
+
 The other direction is free. The bar in front of a quote, `"│ "`, goes into a row of the file's pieces as it is: still a borrow of the binary, nothing copied (measured: `bar is Borrowed: "│ ", no String made`). A longer promise covers a shorter one. A shorter one cannot stand in for a longer, and in a `Vec<Span<'static>>` a single piece of the file is enough to refuse the whole vector.
 
 ## In this codebase
@@ -172,4 +174,4 @@ The other direction is free. The bar in front of a quote, `"│ "`, goes into a 
 
 ## Related
 
-[[borrowing]] · [[slices]] · [[owned-vs-borrowed-pairs]] · [[structs]] · [[drop-and-unwinding]] · [[recursive-data]] · [[statics]]
+[[borrowing]] · [[slices]] · [[owned-vs-borrowed-pairs]] · [[structs]] · [[drop-and-unwinding]] · [[recursive-data]] · [[statics]] · [[threads]]

@@ -61,6 +61,19 @@ opt-level = 3
 
 `"*"` is every package but this one. With it, the slowest file takes 53 ms under `cargo run` at the preview's width in a 120-column terminal, and 42 ms at width 20; before M8 coloured anything, the slowest took 48 and 65. agentdocs itself is still built for debugging, [[integer-overflow]] checks included. The price is paid once: each dependency is built optimised the first time, and kept.
 
+## One crate, several systems: notify
+
+notify hears from the system that a file changed, and on each system it asks a different part of it — `ReadDirectoryChangesW` on Windows, inotify on Linux, FSEvents or kqueue on macOS and the BSDs. `Cargo.lock` lists every package any of them could need: adding notify put 17 there. A build compiles only those for its own system — seven new ones on Windows: notify and notify-types, `libc`, `log`, and `windows-sys` 0.60 with its two crates of targets.
+
+The backends do not behave alike, and what one does is not shown by another:
+
+| | Windows (run here) | Linux (read in notify 8.2's source) |
+|---|---|---|
+| a file changed behind a link, below a directory watched whole | not reported — 0 reports, whichever path it was written through; the link watched by its own path, 2 | reported — notify follows links when it sets up watches below a directory |
+| a file opened or read | not reported: in the two threads' log, the reading that followed a change brought no report after it | reported, every open: notify asks inotify for them |
+
+Both rows of the Linux column are notify's defaults, and neither suits the screen. Followed links would be watched into, which a Walk never does ([ADR-0007](../../adr/0007-links-are-listed-not-followed.md)); and the Walks open every file they read, so every reading would be reported, and taken for a change, would set off the next. The first is a setting, `Config::default().with_follow_symlinks(false)`; the second is what the closure handed to notify leaves out ([[channels]]). Neither was run on Linux, which was not at hand. The closure is tested by calling it with a report of an open made up for the purpose; the setting cannot be tested here at all — the Windows backend does not read it — and turning it back on passes every test on this machine ([ADR-0011](../../adr/0011-changes-are-heard-not-polled.md)).
+
 ## A crate's traits come with it
 
 Most of what a crate adds to types you already have arrives as trait methods, and those exist only where the trait is imported: `use std::io::IsTerminal;` for `stdout().is_terminal()`, `use base64::Engine;` for `STANDARD.encode(…)`. See [[traits]].
@@ -72,4 +85,4 @@ Most of what a crate adds to types you already have arrives as trait methods, an
 
 ## Related
 
-[[modules]] · [[traits]] · [[event-loop]] · [[statics]] · [[integer-overflow]]
+[[modules]] · [[traits]] · [[event-loop]] · [[statics]] · [[integer-overflow]] · [[channels]] · [[file-types-and-links]]

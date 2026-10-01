@@ -106,6 +106,33 @@ fn reason(kind: io::ErrorKind) -> &'static str {
 
 `io::ErrorKind` is `#[non_exhaustive]`: the standard library reserves the right to add variants, so **`_` is required here**, not lazy. On the return type see [[owned-vs-borrowed-pairs]].
 
+## A `Result` inside a `Result`
+
+`edit()`, M9's hand-over of the terminal to an editor, returns `io::Result<io::Result<ExitStatus>>`, and each layer says something different:
+
+```
+io::Result<  io::Result<  ExitStatus  >  >
+└──── ① ───┘ └──── ② ───┘ └──── ③ ───┘
+
+① Err  the terminal was not handed over, or not taken back   → the screen ends
+② Err  the editor could not be started                       → the bottom row says so
+③      it started and ended — an exit code other than 0 too, which is not an Err
+```
+
+```rust
+fn edit(terminal: &mut DefaultTerminal, path: &Path) -> io::Result<io::Result<ExitStatus>> {
+    execute!(io::stdout(), DisableMouseCapture)?;      // ①
+    ratatui::try_restore()?;                           // ①
+    let ended = editor::command(path).status();        // ② and ③, kept as they are
+    enable_raw_mode()?;                                // ①
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;  // ①
+    terminal.clear()?;                                 // ①
+    Ok(ended)
+}
+```
+
+`?` sits only on the lines that deal with the terminal, and each one, on an `Err`, ends `edit` there and returns that `Err` — the outer one. The line that runs the editor has no `?`, so whatever it gives is kept in `ended` and handed back inside `Ok`, on the last line, whether the terminal was taken back after it or not. The loop decides with one more `?`: `let ended = edit(terminal, path)?;` ends the screen on ①, and hands ② and ③ to `app.edited`. Run in this console with each failure brought about: a call before the terminal's modes were set came back as `Err(… Initial console modes not set …)`, before the editor was even tried; a shell that could not be found, `Ok(Err(NotFound))`; an editor cmd could not find, `Ok(Ok(exit code: 1))`.
+
 ## `.ok()` — deliberately dropping the reason
 
 ```rust
@@ -119,8 +146,9 @@ This is a swallow, chosen on purpose: `env::home_dir()` returns a bare `Option` 
 - **The compiler's `help:` suggested undoing the milestone.** Three of the four errors from the first `?` ended with `help: consider using Result::expect ... panicking if the value is a Err`. Taking all three would have compiled and reinstated the panics the milestone existed to remove. The compiler knows the types do not line up; it does not know what you are trying to do.
 - **`Result` is iterable, so a wrong loop still compiled into something.** With `entries` accidentally left as a `Result`, `for entry in &entries` did not fail with "not an iterator" — `Result` yields one item on `Ok` and none on `Err`, so `entry` became `&Vec<Entry>` and the error read `no field 'name' on type '&Vec<Entry>'`. The loop was not dead; it was running once around the wrong thing.
 - **In a recursive function the compiler believes the signature, not the body.** With `md_tree`'s body rewritten but its return type still `io::Result<Vec<Entry>>`, the error landed on `out.absorb(sub)` twelve lines below — because the type of the recursive call comes from the *declaration*. The error surfaces where the contradiction shows, not where the cause is.
+- **Which layer an `Err` comes back in.** In M9's slice 1, a failure of `enable_raw_mode()?` after the editor had ended was taken to come back as `Ok(Err(e))`, in the inner layer, and an outer `Err` to mean the editor could not be started. Two questions showed that what `?` does was known exactly — *it returns there, with the error* — and what was missing was which of the two layers that error is. Written out as `match … { Err(e) => return Err(e), … }`, with *the only line that wraps in `Ok` is the last*, it was answered right in a new shape: a function whose `b?` comes before `Ok(a)` returns `Err("outer")`. Settled.
 - **Swallowing and handling look identical.** `let Ok(item) = item else { continue }` and `let Ok(item) = item else { out.unreadable += 1; continue }` are the same construct; the difference is entirely in whether the `else` body records anything. `let ... else` was never the problem — an empty `else` was.
 
 ## Related
 
-[[option-and-match]] · [[fs-read-dir]] · [[file-types-and-links]] · [[testing]] · [[owned-vs-borrowed-pairs]] · [[drop-and-unwinding]]
+[[option-and-match]] · [[fs-read-dir]] · [[file-types-and-links]] · [[testing]] · [[owned-vs-borrowed-pairs]] · [[drop-and-unwinding]] · [[processes]]

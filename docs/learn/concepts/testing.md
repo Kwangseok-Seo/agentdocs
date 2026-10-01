@@ -84,7 +84,32 @@ Five of those rows did not exist until a reviewer pointed out that **the entire 
 - **A key whose meaning changed left two tests passing without testing what they are named for.** M8 made `Tab` go round three panes where it had gone between two. `a_row_stays_open_while_another_source_is_looked_at` pressed `Tab` twice to get back to the Sources, and now landed in the preview, where `j` and `k` scroll; the Source never changed, and the test still passed. Another tested that the tree's keys do nothing in the Sources pane from a fixture already in the Entries pane, so its one `Tab` went to the preview. Nothing was red. It came out by chance — a quiz option made one of them panic — and a mutation for each (another Source forgetting the open rows; `l` opening a row from the Sources) passed both until each test took the extra `Tab` and said which pane it was in. A mutation set written for the new code alone had not looked at them.
 - **A line whose removal nobody could see.** Of slice 2's fourteen mutations, one that removed the line resetting the next scroll's time when the pointer came back inside the preview passed every test. No test could have caught it: with or without the line, the difference is under 30 ms and shows nowhere. The line was removed.
 - **Mutations run against a copy whose own tests fail are all caught.** M8's review fixes added a test that failed on the fixed code — a click in the preview had handed it `k`, so `k` scrolled instead of moving up a row — and the first run reported twelve mutations of twelve caught, every one by that test. Nothing in the output looked wrong. The harness now runs the copy unmutated first, and stops if anything fails.
+- **A fixture that hid a mutation.** M9's test that every change a Walk would show is heard put a Source that is not there directly in the fixture's own directory. Watched from the nearest directory above it, that was the fixture's root — and a mutation swapping *watched alone* for *watched below* made the root watched below, which heard every other change in the fixture too. The test passed; given a directory of its own, the missing Source made the mutation red.
+- **An assertion about the system, not the code.** The same test first ended by checking that a file rewritten below a Source that reads one level is not heard. On one run Windows reported the subdirectory itself as modified — `Modify rules\target` — and the test failed; across two builds of a project whose `target` sits under its root, a watch on the root heard nothing in 30 seconds. What the code decides — that such a Source is watched alone — is checked where `Source::watched` is; and what a reload that finds nothing new does is the same either way. The assertion was taken out.
+- **Mutations that cannot fail here.** cmd's `/v:off` and `/d` guard against registry settings this machine does not have; `with_follow_symlinks(false)` is read by notify's backends for Linux and the BSDs, not Windows. Each survives every test on this machine, and is kept for the machines where it matters.
 - **A guard tested on the input the author of the guard imagined.** Copying skipped a drag over blanks by checking `text.is_empty()`, and the test dragged within one blank row. The author dragged across two in a real terminal: the rows joined into `"\n"`, which is not empty, and "copied to clipboard" appeared. The rule had been written as *nothing but blanks* and coded as *the empty string*; `!text.trim().is_empty()` is the rule as written, and the two-row case is now in the test.
+
+## What the environment holds, handed in (M9)
+
+`editor::chosen` decides between `$VISUAL`, `$EDITOR` and a fallback. Reading the process's own environment, a test would have to set variables every other test running at the same time can see. So `chosen` is handed the function that looks a name up — `env::var_os` in the program, a `match` on the name in a test — and the environment a test needs is three lines of it ([[closures]]). `read_input` is the same: handed `event::read` by the program, and by its test a closure that sends word of each call, so the test can count how many events were read and when ([[threads]]).
+
+A function compiled only for Unix is compiled on Windows too under `#[cfg(any(not(windows), test))]`, so its tests run with Git's `sh` here ([[processes]]).
+
+## Proving that nothing happens takes time
+
+That the input thread reads nothing more until it is told to cannot be seen at an instant: the test waits 200 ms after the first event and then counts one read. That a watch no longer wanted was given up is shown the same way — a file written where only that watch would hear it, and nothing heard within 500 ms. Both wait for an absence. What waits for something to arrive waits up to 2 seconds, and stops as soon as it comes.
+
+## The loop, driven from outside (M9)
+
+What the loop itself does — the thread, the channel, `go_on` — is outside the tests, which hand events to `App` directly. In M9 it was tested by running the real program in a console and driving it from another: a program that types into the console (`WriteConsoleInputW`), writes files under the screen, and reads back what the console shows (`ReadConsoleOutputCharacterW`), cell by cell. Ten runs of: go to the `docs` Source, change a file, check that it shows; `e`, with a stand-in editor that records the keys it is given; type `hello`; `q`.
+
+| `run` as | the change on screen after | the editor got `hello` |
+|---|---|---|
+| written | 118 – 128 ms | 10 of 10 |
+| the input thread never waiting for `go_on` | 111 – 123 ms | 4 of 10 — and twice the thread took the `e`, the editor opened again, and `q` never reached the screen. An earlier ten: 1, and five times |
+| `go_on` sent before the event is handled | 108 – 132 ms | 10 of 10 |
+
+The last row is a mutation that survived for a reason found only by logging what the thread read: leaving the alternate screen for the editor makes the console report a resize, which the thread read and then waited on. On another system that resize may not come.
 
 ## A screen without a terminal
 
@@ -92,4 +117,4 @@ M5's screen is tested the way the listing is: by keeping judgement out of the pa
 
 ## Related
 
-[[result-and-errors]] · [[fs-read-dir]] · [[file-types-and-links]] · [[structs]] · [[event-loop]]
+[[result-and-errors]] · [[fs-read-dir]] · [[file-types-and-links]] · [[structs]] · [[event-loop]] · [[threads]] · [[processes]]

@@ -90,6 +90,19 @@ enum Phase {
 
 Each event moves it along one edge: a drag turns `Pressed` into `Dragging`, letting go turns `Dragging` into `Done` — and a `Pressed` let go is a plain click, so it is dropped rather than finished. Drawing asks one question, `phase != Phase::Pressed`, to know whether to highlight.
 
+## One type for two kinds of message
+
+A channel carries one type, and M9's loop waits for two kinds of thing on one channel: an event from the terminal, which carries the event or the error reading it, and word that a file may have changed, which carries nothing. One enum is both ([[channels]]):
+
+```rust
+enum Message {
+    Input(io::Result<Event>),
+    Changed,
+}
+```
+
+The loop's `match` on it has to say what each is done with, and a third kind added later would be refused until it did.
+
 ## Pitfalls hit — variant names must exclude each other
 
 The first names proposed for the three [[structs]] traversal rules were `entries`, `bundleDirs`, `LeadDirs`. Two problems, both worth generalising:
@@ -112,4 +125,4 @@ Types and variants are `UpperCamelCase`; fields, functions and variables are `sn
 
 ## Related
 
-[[structs]] · [[option-and-match]] · [[impl-and-methods]] · [[str-scanning]] · [[event-loop]] · [[recursive-data]]
+[[structs]] · [[option-and-match]] · [[impl-and-methods]] · [[str-scanning]] · [[event-loop]] · [[recursive-data]] · [[channels]]

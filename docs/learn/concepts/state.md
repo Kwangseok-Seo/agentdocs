@@ -22,6 +22,7 @@ Keys, clicks and the wheel change them, through `handle`, `click`, `drag`, `whee
 A row number says where something is **drawn**, and that changes when a directory above it opens or the file scrolls. So what should stay put is kept by something that does not change:
 
 - how far a file is scrolled, **by its path** ([[hash-maps]]) — as M7 kept which rows are open;
+- since M9, which row is selected when the Sources are read again, **by its path** too: with the screen reading them whenever a file changes, a file added above the selected one would otherwise have moved the selection onto its neighbour. Only a selected row that is gone falls back to its place;
 - where a drag started and has got to, **by a cell of the text**: which row, counted from the file's first, and how far in from the left — a `Spot`, not a cell of the screen.
 
 ```rust
@@ -61,17 +62,22 @@ Some things were kept once and are not now. Until slice 2 the App kept a copy of
 
 ## A moment as state
 
-"copied to clipboard" comes down two seconds after a copy; a drag held below the preview scrolls it a row every 30 ms. Neither is an event. Each is kept as the moment it is due, an `Option<Instant>`, and the loop asks the App how long it may wait:
+"copied to clipboard" comes down two seconds after a copy; a drag held below the preview scrolls it a row every 30 ms; since M9, the Sources are read again 100 ms after a file is first seen to change. None of them is an event. Each is kept as the moment it is due, an `Option<Instant>` — the notice's inside a `Notice`, which also holds its words and colour — and the loop asks the App how long it may wait:
 
 ```rust
 fn wake_in(&self, now: Instant) -> Option<Duration> {
-    let copied = self.copied_until.map(|until| until.saturating_duration_since(now));
+    let notice = self.notice.as_ref().map(|notice| notice.until.saturating_duration_since(now));
+    let reload = self.reload_at.map(|at| at.saturating_duration_since(now));
     let scroll = self.autoscroll().map(|_| …);
-    [copied, scroll].into_iter().flatten().min()   // the sooner of the two, or None
+    [notice, reload, scroll].into_iter().flatten().min()   // the soonest, or None
 }
 ```
 
-Because the time is handed in, a test says *30 ms later* as `start + AUTOSCROLL_EVERY` and waits for nothing.
+Because the time is handed in, a test says *30 ms later* as `start + AUTOSCROLL_EVERY` and waits for nothing. A change noted while one is already due does not move it: `reload_at.get_or_insert(now + SETTLE)` sets the moment only when there is none, so a burst of reports is read once, 100 ms after the first.
+
+## What a Walk finds again replaces only what differs
+
+Reading the Sources again could clear the screen's state wholesale — the selected row, text dragged over. Since M9 each Source's new Walk is compared with the one the screen has, and taken only where it differs ([[traits]]); when none differs, nothing is touched. A file the screen does not show, written under it, leaves a selection where it was.
 
 ## State carried from one line to the next
 
@@ -95,4 +101,4 @@ It also means a block cannot be coloured from the middle: to draw its 200th line
 
 ## Related
 
-[[event-loop]] · [[hash-maps]] · [[borrowing]] · [[testing]] · [[enums-and-data]] · [[statics]]
+[[event-loop]] · [[hash-maps]] · [[borrowing]] · [[testing]] · [[enums-and-data]] · [[statics]] · [[traits]]

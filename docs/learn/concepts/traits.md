@@ -57,6 +57,8 @@ error[E0277]: the trait bound `EntryKind: Default` is not satisfied
 
 An enum has no obvious first value, so `EntryKind` has no `Default`, and neither can `Entry`.
 
+`#[derive(PartialEq)]` writes `==` the same way, field by field, and M9 needed it to tell whether a Walk found anything new: `Walked`, `Node`, `Entry` and `EntryKind` derive it, and two Walks are equal when every row is — names, paths, descriptions and the whole text of every file. `io::Error` does not implement `PartialEq`, so a failed Walk cannot be compared that way; `source::same` compares two failures by their `kind()`, which can be ([[result-and-errors]]). Comparing two Walks of everything this machine showed with this repository as the project — 100 files and 834 KB of text, before M9's own pages were written — took 26 µs.
+
 ## Bounds: "any type, as long as…"
 
 The standard library's `all`:

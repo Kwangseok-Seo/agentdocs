@@ -13,3 +13,5 @@ An index of the settled design decisions in this repository. Check the relevant 
 | [0007](0007-links-are-listed-not-followed.md) | A link is listed but never walked into | accepted |
 | [0008](0008-screen-for-a-bare-command-at-a-terminal.md) | Only a bare `agentdocs` at a terminal opens the screen; words and pipes get the listing | accepted |
 | [0009](0009-unreadable-is-a-row-where-it-was-found.md) | What a Walk could not read is a row where it was found | accepted (replaces the third paragraph of 0006) |
+| [0010](0010-the-editor-runs-through-the-shell.md) | The editor is run by the platform's shell, and the path never goes through the shell's reading of a line | accepted |
+| [0011](0011-changes-are-heard-not-polled.md) | Changes on disk are heard from the system, and what to watch follows each Walk | accepted |

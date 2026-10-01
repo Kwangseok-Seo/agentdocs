@@ -53,6 +53,12 @@ path.canonicalize()            // resolves to the real path — a Result, since 
 
 `canonicalize` is what a "have I been here already?" set would be built on, and it does prove a cycle: on the self-referential junction it returned the parent's own path. agentdocs does not use it — see [ADR-0007](../../adr/0007-links-are-listed-not-followed.md) for why not following links at all is a shorter rule than following them carefully.
 
+## Watching through a link (M9)
+
+A Walk reads a linked Bundle's Lead through the link. Watching the directory that holds the link does not hear a change behind it: with `skills` watched as a whole, writing the Lead behind a junction brought 0 reports on Windows, whether it was written through the junction or at the place it points to. Watching the link's own path, as a directory on its own, brought 2 either way. So `Source::watched` names each link standing in for a Bundle as well as the Source's directory ([ADR-0011](../../adr/0011-changes-are-heard-not-polled.md)).
+
+The other way round is a default to turn off: below a directory watched as a whole, notify on Linux and the BSDs follows links and watches what is behind them. A link is never walked into, so it is not watched into either ([[external-crates]]).
+
 ## Pitfalls hit
 
 - **A Bundle that was a broken link vanished without a trace.** `bundle_dirs` filtered on `!path.is_dir()`, so a dangling junction produced no row at all — not even the `-` that a Bundle with no Lead gets. The count said 2 where 3 directory entries existed, and nothing was printed on any stream. This is under-counting, the *opposite* direction from the cycle below, and one boolean produced both.
@@ -63,4 +69,4 @@ path.canonicalize()            // resolves to the real path — a Result, since 
 
 ## Related
 
-[[fs-read-dir]] · [[paths]] · [[result-and-errors]] · [[option-and-match]]
+[[fs-read-dir]] · [[paths]] · [[result-and-errors]] · [[option-and-match]] · [[external-crates]]

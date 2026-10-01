@@ -13,7 +13,7 @@ So this repository is not a finished codebase. It is a **record of something gro
 
 ## Status
 
-**M8 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries **as a tree**, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks **coloured by their language**, tables, and frontmatter without its fences. A skill **opens onto its supporting files**, and a project's `docs/` onto its directories. `j`/`k` or the arrows move, `l`/`h` open and close a row, `Tab` goes round the panes, a click selects, **the wheel or Page Down scrolls the preview**, and **dragging across it copies the text** to the clipboard — held past its edge, the drag scrolls it and keeps selecting.
+**M9 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries **as a tree**, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks **coloured by their language**, tables, and frontmatter without its fences. A skill **opens onto its supporting files**, and a project's `docs/` onto its directories. `j`/`k` or the arrows move, `l`/`h` open and close a row, `Tab` goes round the panes, a click selects, **the wheel or Page Down scrolls the preview**, and **dragging across it copies the text** to the clipboard — held past its edge, the drag scrolls it and keeps selecting. **`e` opens the selected file in your `$EDITOR`**, and the screen comes back with what you wrote; and when another program — an agent in the next pane — changes a file the screen shows, **the screen reads it again by itself**.
 
 ```
 $ cd ~/projects/cli-maker && agentdocs        # a 120 x 18 terminal; skills, session-retro opened, RULE-FORMAT selected
@@ -34,10 +34,12 @@ $ cd ~/projects/cli-maker && agentdocs        # a 120 x 18 terminal; skills, ses
 │                          ││                              ││## 가드레일                                               │
 │                          ││                              ││                                                          │
 └──────────────────────────┘└──────────────────────────────┘└──────────────────────────────────────────────────────────┘
- j/k ↓/↑ move   l/h open/close   tab pane   click select   drag copy   q quit
+ j/k ↓/↑ move   l/h open/close   tab pane   e edit   drag copy   q quit
 ```
 
 Every row starts closed. `session-retro`'s own row shows its `SKILL.md`; the rows under it are what it carries besides. `grill-with-docs` is a link to a skill kept elsewhere, and says so, since what is behind a link is never walked into ([ADR-0007](docs/adr/0007-links-are-listed-not-followed.md)). The count beside a source stays the number of entries, however many rows are open — `docs:80` opens as two rows, `adr/` and `learn/`. In a terminal, headings are bold and cyan; code in a language the highlighter knows is coloured by kind — keywords, strings, comments, numbers, a diff's added and removed lines — in the terminal's own palette, and other code is yellow, as is Markdown shown as written, so that its headings are not taken for the file's own; a table that does not fit the preview becomes one block per row. Each file stays scrolled where it was left, and the title says which rows show.
+
+`e` runs the editor `$VISUAL` names, or else `$EDITOR` — through your shell, so a value such as `code --wait` is read as it would be at a prompt — or else notepad on Windows and vi elsewhere ([ADR-0010](docs/adr/0010-the-editor-runs-through-the-shell.md)). The screen hears that a file changed from the system rather than by reading everything again on a timer, so nothing is read until a change is reported, and a change shows about a tenth of a second after it is written ([ADR-0011](docs/adr/0011-changes-are-heard-not-polled.md)).
 
 With words, or with its output going to a pipe or a file, it prints the **listing** instead — which is also what an AI agent running it from its own shell gets ([ADR-0008](docs/adr/0008-screen-for-a-bare-command-at-a-terminal.md)). The listing is where M1–M4 happened: the binary discovers its sources, walks each one by its own rule, reads a name and description out of each entry's frontmatter, **says what it could not read instead of reporting zero**, and **searches**.
 
@@ -123,7 +125,7 @@ $ cd ~/projects/cli-maker && agentdocs
  / search   tab pane   e $EDITOR   q quit
 ```
 
-The tree in that sketch is M7's, and the screen at the top of this page is how it came out — a skill's `SKILL.md` is shown on the skill's own row rather than as one of the rows under it. Searching from the screen and handing a file to `$EDITOR` are still ahead.
+The tree in that sketch is M7's, and the screen at the top of this page is how it came out — a skill's `SKILL.md` is shown on the skill's own row rather than as one of the rows under it. Handing a file to `$EDITOR` came in M9; searching from the screen is still ahead.
 
 ## Learning roadmap
 
@@ -140,7 +142,7 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 | **M6** ✅ | Markdown rendering — headings, lists, quotes, code blocks, tables, frontmatter, wrapped by the renderer | **lifetimes**, slices, `Cow` |
 | **M7** ✅ | The tree — skills open onto their supporting files and `docs/` onto its directories; search reads supporting files; what cannot be read is a row | **recursive data structures**, `Box` and `Vec` |
 | **M8** ✅ | Code block highlighting + scrolling — the wheel scrolls the preview, a drag can select past the rows in view | `syntect`, state management |
-| **M9** | `$EDITOR` delegation + file watching | `std::process`, **threads & channels** |
+| **M9** ✅ | `$EDITOR` delegation + file watching — `e` opens the editor, and the screen follows what changes on disk | `std::process`, **threads & channels** |
 | **M10** | Config file (extra sources, ordering) | `serde`, TOML, `thiserror` |
 | **M11** | Distribution — multi-platform binaries, install scripts, CI | release profiles, cross-compilation |
 

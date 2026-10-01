@@ -27,10 +27,14 @@ move occurs because `a` has type `String`, which does not implement the `Copy` t
 
 `f(cwd)` hands ownership to the function; using `cwd` afterwards is `borrow of moved value`. To avoid that, pass a reference — see [[borrowing]] — as in `f(&cwd)`.
 
+## Moving into another thread
+
+A closure run on another thread takes what it uses — `move` — since it may outlive the function that made it ([[threads]]). What it takes is gone from that function, as after any move: the one `Sender` the loop had could not go to two threads, and `.clone()` made the second ([[channels]]). Sending a value over a channel moves it too.
+
 ## Pitfalls hit
 
 In M7, the key that opens or closes a row was written `if !self.open.insert(path) { self.open.remove(&path); }`. The logic was right — `insert` answers `false` when the path was already in the set — but `insert` takes the `PathBuf` itself, so on the next line `path` is gone: `E0382: borrow of moved value: path`. The compiler's help, `insert(path.clone())`, passes all 229 tests. The version kept, `if !self.open.remove(&path) { self.open.insert(path); }`, only lends `path` until the last line, which hands it over, and needs no copy.
 
 ## Related
 
-[[borrowing]] · [[owned-vs-borrowed-pairs]] · [[mutability]]
+[[borrowing]] · [[owned-vs-borrowed-pairs]] · [[mutability]] · [[threads]] · [[channels]]
