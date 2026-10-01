@@ -160,6 +160,43 @@ impl Source {
             Walk::MarkdownTree => md_tree(&self.path),
         }
     }
+
+    /// Where a change to what this Source shows would be seen: paths to watch,
+    /// each with whether to watch below it too. The directory, as far down as
+    /// its Walk goes; and each link standing in for a Bundle, whose Lead is
+    /// read through the link and changes where watching the directory does
+    /// not see it. A directory that could not be walked is watched from the
+    /// nearest one above it that is there, for the moment it appears.
+    ///
+    /// A link to a file is read through too, and is not watched: a change
+    /// behind one shows once something else changes.
+    pub fn watched(&self, walked: &io::Result<Walked>) -> Vec<(PathBuf, bool)> {
+        let Ok(walked) = walked else {
+            let above = self.path.ancestors().skip(1).find(|dir| dir.is_dir());
+            return above.map(|dir| vec![(dir.to_path_buf(), false)]).unwrap_or_default();
+        };
+        let below = match self.walk {
+            Walk::MarkdownFiles => false,
+            Walk::BundleDirs | Walk::MarkdownTree => true,
+        };
+        let mut out = vec![(self.path.clone(), below)];
+        for node in &walked.nodes {
+            if let Node::Entry(Entry { path, kind: EntryKind::Bundle { inside: None, .. }, .. }) = node {
+                out.push((path.clone(), false));
+            }
+        }
+        out
+    }
+}
+
+/// Whether two Walks of a Source found the same: the same rows, or no rows
+/// for the same reason.
+pub fn same(a: &io::Result<Walked>, b: &io::Result<Walked>) -> bool {
+    match (a, b) {
+        (Ok(a), Ok(b)) => a == b,
+        (Err(a), Err(b)) => a.kind() == b.kind(),
+        _ => false,
+    }
 }
 
 pub fn find_project_root(start: &Path, home: &Path) -> Option<PathBuf> {
@@ -186,7 +223,7 @@ pub fn find_project_root(start: &Path, home: &Path) -> Option<PathBuf> {
 /// read, in the shape of the directories it found them in. A count that hides
 /// its own blind spots is a wrong count, and one that names none of them
 /// leaves the reader to find them.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Walked {
     pub nodes: Vec<Node>,
 }
@@ -620,6 +657,61 @@ mod tests {
             Walk::MarkdownFiles,
         );
         assert_eq!(reason(src.entries().unwrap_err().kind()), "missing");
+    }
+
+    // --------------------------------------------------------- Source::watched
+
+    fn watched(src: &Source) -> Vec<(PathBuf, bool)> {
+        src.watched(&src.entries())
+    }
+
+    #[test]
+    fn a_source_is_watched_as_far_down_as_its_walk_goes() {
+        let dir = scratch("watched-walks");
+        for (walk, below) in [(Walk::MarkdownFiles, false), (Walk::BundleDirs, true), (Walk::MarkdownTree, true)] {
+            let src = Source::new("any", dir.clone(), Scope::Global, walk);
+            assert_eq!(watched(&src), [(dir.clone(), below)]);
+        }
+    }
+
+    #[test]
+    fn a_link_standing_in_for_a_bundle_is_watched_by_its_own_path() {
+        let dir = scratch("watched-link");
+        let skills = dir.join("skills");
+        write(&skills.join("alpha").join("SKILL.md"), "# alpha\n");
+        write(&dir.join("target").join("SKILL.md"), "# linked\n");
+        if !link_dir(&dir.join("target"), &skills.join("linked")) {
+            return;
+        }
+        let src = Source::new("skills", skills.clone(), Scope::Global, Walk::BundleDirs);
+        let mut paths = watched(&src);
+        paths.sort();
+        assert_eq!(paths, [(skills.clone(), true), (skills.join("linked"), false)]);
+    }
+
+    #[test]
+    fn a_directory_that_is_not_there_is_watched_from_the_nearest_one_above() {
+        let dir = scratch("watched-absent");
+        let src = Source::new("docs", dir.join("gone").join("docs"), Scope::Project, Walk::MarkdownTree);
+        assert_eq!(watched(&src), [(dir.clone(), false)]);
+    }
+
+    #[test]
+    fn two_walks_are_the_same_until_something_they_show_changes() {
+        let dir = scratch("same-walks");
+        write(&dir.join("one.md"), "# one\n");
+        let src = Source::new("rules", dir.clone(), Scope::Global, Walk::MarkdownFiles);
+        let before = src.entries();
+        assert!(same(&before, &src.entries()));
+
+        write(&dir.join("notes.txt"), "not a document");
+        assert!(same(&before, &src.entries()));
+        write(&dir.join("one.md"), "# one, changed\n");
+        assert!(!same(&before, &src.entries()));
+
+        let gone = Source::new("gone", dir.join("nope"), Scope::Global, Walk::MarkdownFiles);
+        assert!(same(&gone.entries(), &gone.entries()));
+        assert!(!same(&gone.entries(), &before));
     }
 
     // ------------------------------------------------------ find_project_root

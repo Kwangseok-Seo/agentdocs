@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::frontmatter::parse_frontmatter;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Entry {
     pub name: String,
     pub path: PathBuf,
@@ -13,7 +13,7 @@ pub struct Entry {
     pub text: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum EntryKind {
     File,
     /// A directory made of a Lead and the supporting files it carries. `inside`
@@ -30,7 +30,7 @@ pub enum EntryKind {
 /// carries only where they are. A `Node` held directly inside a `Node` would
 /// never end, and the compiler refuses it (E0072) — as it does when the way
 /// back to `Node` runs through `Entry` and a Bundle's `inside`.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Node {
     Entry(Entry),
     Dir { path: PathBuf, children: Vec<Node> },

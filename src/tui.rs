@@ -3,10 +3,13 @@ use std::io::{self, Write};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use notify::{RecursiveMode, Watcher};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
@@ -25,7 +28,7 @@ use crate::editor;
 use crate::entry::{Entry, EntryKind, Node};
 use crate::listing::{failed, heading, printable, reason};
 use crate::markdown;
-use crate::source::{Scope, Source, Walked};
+use crate::source::{Scope, Source, Walked, same};
 
 /// The keys the screen answers to, shown along its bottom row. The arrows
 /// that do what `l` and `h` do, Enter, and clicking to select are left out:
@@ -45,6 +48,11 @@ const WHEEL_ROWS: isize = 3;
 /// How often the preview scrolls a row toward a pointer dragged above or
 /// below it — herdr's interval.
 const AUTOSCROLL_EVERY: Duration = Duration::from_millis(30);
+
+/// How long after a file is seen to change the Sources are read again. One
+/// save arrives as several changes — eight, for a file written aside and
+/// renamed over the old one — and is read once they are over.
+const SETTLE: Duration = Duration::from_millis(100);
 
 /// What the screen shows, and which part of it is selected. Keys and the mouse
 /// change it; drawing only reads it — and notes where and what it drew, for
@@ -79,6 +87,9 @@ pub struct App {
     selection: Option<Selection>,
     /// What the bottom row says at its right end, for a while.
     notice: Option<Notice>,
+    /// When the Sources are next read again, once a file has been seen to
+    /// change.
+    reload_at: Option<Instant>,
 }
 
 /// A few words at the right end of the bottom row: that a drag was copied, or
@@ -263,6 +274,7 @@ impl App {
             source_offset: 0,
             selection: None,
             notice: None,
+            reload_at: None,
         }
     }
 
@@ -352,11 +364,16 @@ impl App {
     }
 
     /// Whatever has come due by `now`: a notice comes down once its time is
-    /// up, and a drag held above or below the preview scrolls it a row toward
-    /// the pointer, every `AUTOSCROLL_EVERY`.
+    /// up, the Sources are read again once a change has settled, and a drag
+    /// held above or below the preview scrolls it a row toward the pointer,
+    /// every `AUTOSCROLL_EVERY`.
     fn tick(&mut self, now: Instant) {
         if self.notice.as_ref().is_some_and(|notice| now >= notice.until) {
             self.notice = None;
+        }
+        if self.reload_at.is_some_and(|at| now >= at) {
+            self.reload_at = None;
+            self.reload();
         }
 
         let Some(rows) = self.autoscroll() else { return };
@@ -387,16 +404,17 @@ impl App {
         }
     }
 
-    /// How long the loop may wait for a key or the mouse before something
-    /// comes due: a notice coming down, or the next row of a scroll toward
-    /// the pointer. `None` when nothing will.
+    /// How long the loop may wait for a key, the mouse or a change before
+    /// something comes due: a notice coming down, the Sources read again, or
+    /// the next row of a scroll toward the pointer. `None` when nothing will.
     fn wake_in(&self, now: Instant) -> Option<Duration> {
         let notice = self.notice.as_ref().map(|notice| notice.until.saturating_duration_since(now));
+        let reload = self.reload_at.map(|at| at.saturating_duration_since(now));
         let scroll = self.autoscroll().map(|_| {
             let at = self.selection.and_then(|selection| selection.scroll_at);
             at.map_or(Duration::ZERO, |at| at.saturating_duration_since(now))
         });
-        [notice, scroll].into_iter().flatten().min()
+        [notice, reload, scroll].into_iter().flatten().min()
     }
 
     /// The text under `selection`: one line per row, without the blanks that
@@ -526,19 +544,49 @@ impl App {
         self.notice = Some(Notice { text, colour: Color::Red, until: now + NOTICE_FOR });
     }
 
-    /// Walk every Source again. Which rows are open and where each file was
+    /// A file may have changed: read the Sources again once the change has
+    /// settled. Changes that follow do not put it off.
+    fn changed(&mut self, now: Instant) {
+        self.reload_at.get_or_insert(now + SETTLE);
+    }
+
+    /// Walk every Source again, and take what a Walk finds where it differs
+    /// from what the screen has. Which rows are open and where each file was
     /// scrolled to are kept by path, so they hold for whatever the Walk finds
-    /// now; the selected row is kept by its place, and moves up to the last
-    /// row when fewer are left.
+    /// now; so is the selected row, which otherwise stays in its place and
+    /// moves up to the last row when fewer are left. Where nothing differs,
+    /// nothing moves — text dragged over stays selected.
     fn reload(&mut self) {
+        let selected = self.row().map(|row| row.node.path().to_path_buf());
+        let mut differs = false;
         for (src, walked) in &mut self.sources {
-            *walked = src.entries();
+            let now = src.entries();
+            if !same(walked, &now) {
+                *walked = now;
+                differs = true;
+            }
         }
+        if !differs {
+            return;
+        }
+
+        let found = selected.and_then(|path| self.rows().iter().position(|row| row.node.path() == path));
         let last = self.rows().len().saturating_sub(1);
-        if self.entries.selected().is_some_and(|at| at > last) {
-            self.entries.select(Some(last));
+        match found {
+            Some(at) => self.entries.select(Some(at)),
+            None if self.entries.selected().is_some_and(|at| at > last) => self.entries.select(Some(last)),
+            None => {}
         }
         self.selection = None;
+    }
+
+    /// Everything to watch for a change the screen would show, from every
+    /// Source, once each.
+    fn watched(&self) -> Vec<(PathBuf, bool)> {
+        let mut all: Vec<_> = self.sources.iter().flat_map(|(src, walked)| src.watched(walked)).collect();
+        all.sort();
+        all.dedup();
+        all
     }
 
     /// One row down in the focused pane, staying put on the last row.
@@ -869,23 +917,94 @@ fn edit(terminal: &mut DefaultTerminal, path: &Path) -> io::Result<io::Result<Ex
     Ok(ended)
 }
 
-/// Draw, wait for a key or the mouse, act on it — and again, until `q`.
-fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
+/// What the loop waits for: something from the terminal, or word that a file
+/// may have changed.
+enum Message {
+    Input(io::Result<Event>),
+    Changed,
+}
+
+/// Read the terminal with `read` on a thread of its own, one event at a time,
+/// and hand each to the loop. The next is not read until the loop says so on
+/// `go_on`: while the editor has the terminal, the loop does not, and every
+/// key is the editor's. A thread reading all the while left the editor with
+/// "hello" whole once in 10 tries, and five times took its `e`, which opened
+/// the editor a second time (M9).
+fn read_input(mut read: impl FnMut() -> io::Result<Event>, to_loop: Sender<Message>, go_on: Receiver<()>) {
     loop {
+        if to_loop.send(Message::Input(read())).is_err() {
+            return;
+        }
+        if go_on.recv().is_err() {
+            return;
+        }
+    }
+}
+
+/// Watch what `wanted` names, below a path too where it says so, and stop
+/// watching what it no longer names. What cannot be watched — a link whose
+/// target is gone — is passed over, and not tried again until what is wanted
+/// changes.
+fn rewatch(watcher: &mut impl Watcher, watching: &mut Vec<(PathBuf, bool)>, wanted: Vec<(PathBuf, bool)>) {
+    if *watching == wanted {
+        return;
+    }
+    for (path, _) in watching.iter().filter(|w| !wanted.contains(w)) {
+        let _ = watcher.unwatch(path);
+    }
+    for (path, below) in wanted.iter().filter(|w| !watching.contains(w)) {
+        let mode = if *below { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        let _ = watcher.watch(path, mode);
+    }
+    *watching = wanted;
+}
+
+/// Draw, wait for the terminal or a change, act on it — and again, until `q`.
+///
+/// Two threads feed the loop: one reads the terminal, and one — notify's —
+/// hears from the system that a file changed. Each hands what it has over the
+/// same channel, so the loop waits in one place for whichever comes first.
+fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
+    let (to_loop, messages) = mpsc::channel();
+    let (go_on, gone_on) = mpsc::channel();
+
+    let input = to_loop.clone();
+    thread::spawn(move || read_input(event::read, input, gone_on));
+
+    let mut watcher = notify::recommended_watcher(move |_| {
+        let _ = to_loop.send(Message::Changed);
+    })
+    .map_err(io::Error::other)?;
+    let mut watching = Vec::new();
+
+    loop {
+        rewatch(&mut watcher, &mut watching, app.watched());
         app.tick(Instant::now());
         terminal.draw(|frame| app.render(frame))?;
 
         // While something is due — "copied to clipboard" coming down, the
-        // next row of a scroll toward the pointer — wait no longer than until
-        // then: when the time runs out with nothing pressed, go round again so
-        // that `tick` sees to it.
-        if let Some(wait) = app.wake_in(Instant::now()) {
-            if !event::poll(wait)? {
+        // Sources read again, the next row of a scroll toward the pointer —
+        // wait no longer than until then: when the time runs out with nothing
+        // arrived, go round again so that `tick` sees to it.
+        let waited = match app.wake_in(Instant::now()) {
+            Some(wait) => messages.recv_timeout(wait),
+            None => messages.recv().map_err(RecvTimeoutError::from),
+        };
+        let message = match waited {
+            Ok(message) => message,
+            Err(RecvTimeoutError::Timeout) => continue,
+            // Each thread keeps its way in until the loop is over.
+            Err(RecvTimeoutError::Disconnected) => return Err(io::Error::other("nothing left to wait for")),
+        };
+        let event = match message {
+            Message::Changed => {
+                app.changed(Instant::now());
                 continue;
             }
-        }
+            Message::Input(event) => event?,
+        };
 
-        match event::read()? {
+        match event {
             // Windows reports a key going up as well as going down, so every
             // keystroke arrives twice. Only the press counts.
             Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -917,6 +1036,8 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
             },
             _ => {}
         }
+        // Done with it, the editor included: the next may be read.
+        let _ = go_on.send(());
     }
 }
 
@@ -1815,6 +1936,146 @@ mod tests {
         app.edited(Ok(exit(0)), Instant::now());
         assert!(!bottom_row(&mut app).contains("editor:"));
         assert_eq!(app.wake_in(Instant::now()), None);
+    }
+
+    // ------------------------------------------------------------- watching
+
+    /// Longer than anything here should take to arrive.
+    const ARRIVES: Duration = Duration::from_secs(2);
+
+    #[test]
+    fn the_input_thread_reads_the_next_event_only_once_told_to() {
+        let (to_loop, messages) = mpsc::channel();
+        let (go_on, gone_on) = mpsc::channel();
+        let (read_once, reads) = mpsc::channel();
+        let read = move || {
+            read_once.send(()).unwrap();
+            Ok(Event::FocusGained)
+        };
+        thread::spawn(move || read_input(read, to_loop, gone_on));
+
+        assert!(matches!(messages.recv_timeout(ARRIVES), Ok(Message::Input(Ok(Event::FocusGained)))));
+        // However long the loop takes over it — the editor may be open.
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(reads.try_iter().count(), 1);
+
+        go_on.send(()).unwrap();
+        assert!(matches!(messages.recv_timeout(ARRIVES), Ok(Message::Input(_))));
+        assert_eq!(reads.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn a_change_is_read_once_it_has_settled_and_not_put_off_by_the_next() {
+        let dir = scratch("tui-watch-settle");
+        write(&dir.join("alpha.md"), "# before\n");
+        let mut app = app(vec![Source::new("rules", dir.clone(), Scope::Global, Walk::MarkdownFiles)]);
+        let start = Instant::now();
+
+        write(&dir.join("alpha.md"), "# after\n");
+        app.changed(start);
+        assert_eq!(app.wake_in(start), Some(SETTLE));
+        app.changed(start + SETTLE / 2);
+        app.tick(start + SETTLE - Duration::from_millis(1));
+        assert_eq!(first_row(&mut app), "# before");
+
+        app.tick(start + SETTLE);
+        assert_eq!(first_row(&mut app), "# after");
+        assert_eq!(app.wake_in(start + SETTLE), None);
+    }
+
+    #[test]
+    fn the_selected_row_stays_on_its_file_when_one_appears_above_it() {
+        let dir = scratch("tui-watch-above");
+        write(&dir.join("b.md"), "# b\n");
+        write(&dir.join("c.md"), "# c\n");
+        let mut app = app(vec![Source::new("rules", dir.clone(), Scope::Global, Walk::MarkdownFiles)]);
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('j')]);
+        assert_eq!(app.entry().unwrap().name, "c");
+
+        write(&dir.join("a.md"), "# a\n");
+        app.reload();
+        assert_eq!(app.entry().unwrap().name, "c");
+        assert_eq!(app.entries.selected(), Some(2));
+    }
+
+    #[test]
+    fn a_change_the_screen_would_not_show_leaves_dragged_text_selected() {
+        let dir = scratch("tui-watch-same");
+        let items: String = (1..=12).map(|n| format!("- {n}\n")).collect();
+        write(&dir.join("long.md"), &items);
+        let mut app = app(vec![Source::new("rules", dir.clone(), Scope::Global, Walk::MarkdownFiles)]);
+        drag_across(&mut app, (61, 1), (63, 1));
+
+        write(&dir.join("notes.txt"), "not a document");
+        app.reload();
+        assert_eq!(reversed_rows(&mut app), [true, false, false, false, false]);
+
+        write(&dir.join("long.md"), "- 1 again\n");
+        app.reload();
+        assert_eq!(reversed_rows(&mut app), [false; 5]);
+    }
+
+    /// Whether `messages` hears of a change: the first word of it, and then
+    /// the rest of the same burst, so that the next change starts afresh.
+    fn heard(messages: &Receiver<Message>, wait: Duration) -> bool {
+        let first = matches!(messages.recv_timeout(wait), Ok(Message::Changed));
+        while messages.recv_timeout(Duration::from_millis(200)).is_ok() {}
+        first
+    }
+
+    #[test]
+    fn every_change_a_walk_would_show_is_heard() {
+        let dir = scratch("tui-watch-heard");
+        let (rules, skills, docs) = (dir.join("rules"), dir.join("skills"), dir.join("docs"));
+        // Apart from the rest, so that watching above it watches nothing else.
+        let project = dir.join("project");
+        std::fs::create_dir(&project).unwrap();
+        let missing = project.join("missing");
+        write(&rules.join("one.md"), "# one\n");
+        write(&skills.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
+        write(&skills.join("alpha").join("deep").join("ref.md"), "# ref\n");
+        write(&docs.join("a").join("b.md"), "# b\n");
+        let elsewhere = dir.join("elsewhere").join("linked");
+        write(&elsewhere.join("SKILL.md"), "---\nname: linked\n---\n");
+        let linked = link_dir(&elsewhere, &skills.join("linked"));
+
+        let mut app = app(vec![
+            Source::new("rules", rules.clone(), Scope::Global, Walk::MarkdownFiles),
+            Source::new("skills", skills.clone(), Scope::Global, Walk::BundleDirs),
+            Source::new("docs", docs.clone(), Scope::Project, Walk::MarkdownTree),
+            Source::new("missing", missing.clone(), Scope::Project, Walk::MarkdownFiles),
+        ]);
+        let (to_loop, messages) = mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |_| {
+            let _ = to_loop.send(Message::Changed);
+        })
+        .unwrap();
+        let mut watching = Vec::new();
+        rewatch(&mut watcher, &mut watching, app.watched());
+
+        let mut changes = vec![
+            ("a rule", rules.join("one.md")),
+            ("a Bundle's Lead", skills.join("alpha").join("SKILL.md")),
+            ("a supporting file further down", skills.join("alpha").join("deep").join("ref.md")),
+            ("a document further down a tree", docs.join("a").join("b.md")),
+            ("a directory that was not there", missing.join("new.md")),
+        ];
+        if linked {
+            changes.push(("a Lead behind a link", elsewhere.join("SKILL.md")));
+        }
+        for (what, path) in changes {
+            write(&path, "# changed\n");
+            assert!(heard(&messages, ARRIVES), "{what} changed unheard");
+        }
+
+        // Only once the directory is there is it watched, and the one above it
+        // no longer: that took the Sources being read again.
+        app.reload();
+        rewatch(&mut watcher, &mut watching, app.watched());
+        write(&missing.join("new.md"), "# changed again\n");
+        assert!(heard(&messages, ARRIVES), "a file in the directory that appeared changed unheard");
+        write(&project.join("notes.md"), "# not in any Source\n");
+        assert!(!heard(&messages, Duration::from_millis(500)), "the directory above is still watched");
     }
 
     // -------------------------------------------------------------- drawing
