@@ -13,7 +13,7 @@ So this repository is not a finished codebase. It is a **record of something gro
 
 ## Status
 
-**M9 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries **as a tree**, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks **coloured by their language**, tables, and frontmatter without its fences. A skill **opens onto its supporting files**, and a project's `docs/` onto its directories. `j`/`k` or the arrows move, `l`/`h` open and close a row, `Tab` goes round the panes, a click selects, **the wheel or Page Down scrolls the preview**, and **dragging across it copies the text** to the clipboard — held past its edge, the drag scrolls it and keeps selecting. **`e` opens the selected file in your `$EDITOR`**, and the screen comes back with what you wrote; and when another program — an agent in the next pane — changes a file the screen shows, **the screen reads it again by itself**.
+**M10 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries **as a tree**, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks **coloured by their language**, tables, and frontmatter without its fences. A skill **opens onto its supporting files**, and a project's `docs/` onto its directories. `j`/`k` or the arrows move, `l`/`h` open and close a row, `Tab` goes round the panes, a click selects, **the wheel or Page Down scrolls the preview**, and **dragging across it copies the text** to the clipboard — held past its edge, the drag scrolls it and keeps selecting. **`e` opens the selected file in your `$EDITOR`**, and the screen comes back with what you wrote; and when another program — an agent in the next pane — changes a file the screen shows, **the screen reads it again by itself**. A **config file** adds sources of your own, and sets the order the sources are shown in.
 
 ```
 $ cd ~/projects/cli-maker && agentdocs        # a 120 x 18 terminal; skills, session-retro opened, RULE-FORMAT selected
@@ -107,6 +107,55 @@ PROJECT C:\Users\adman\projects\cli-maker
 
 When the word sits further along a long line than fits, that line is shown from just before the word. The rules on this machine have no frontmatter and are written in Korean, which is why the search reads whole files: over names alone, `검증` finds 0 entries; over the text, 39 ([M4](docs/learn/milestones/M4.md)).
 
+## Config files
+
+Documentation does not always live where the defaults look. A file named `.agentdocs.toml` adds sources of your own and sets the order the sources are shown in: the one in your home directory speaks for the global block, and the one at a project's root for that project's, so a repository carries its own layout wherever under your home directory it is cloned ([ADR-0012](docs/adr/0012-config-files-sit-where-their-sources-do.md)). Neither has to exist.
+
+```toml
+# .agentdocs.toml at the root of session-seal, which keeps its documentation in two directories of its own.
+order = ["Wiki"]             # shown first; every other source keeps its place
+
+[[source]]
+name = "Sessions"
+path = "Sessions"            # from the project's root; ~/… is from your home directory
+walk = "markdown-tree"       # every Markdown file below it, directories and all
+
+[[source]]
+name = "Wiki"
+path = "Wiki"
+walk = "markdown-files"      # one level of Markdown files
+```
+
+The third walk is `bundle-dirs`, one directory to each skill, as `~/.claude/skills` is walked. `order` has to come before the first `[[source]]`: in TOML every key after a table's header belongs to that table.
+
+```
+$ cd session-seal && agentdocs | more        # abridged: a copy of session-seal with that file, 365 lines in all
+GLOBAL
+  skills:6
+  ...
+PROJECT C:\...\session-seal
+  Wiki:7
+  root md:1
+  docs:(missing)
+  Sessions:323
+```
+
+A file that cannot be used — it will not read, it is not TOML, it holds a key that has no place in it, or `order` names a source that is not there — adds nothing and changes no order, and says so where its sources would have been, in the parser's own words. The same file with `markdown-tree` written `tree`:
+
+```
+PROJECT C:\...\session-seal                  # abridged: the root md row's entry left out
+  root md:1
+  docs:(missing)
+  .agentdocs.toml:(invalid)
+    TOML parse error at line 7, column 8
+      |
+    7 | walk = "tree"                # every Markdown file below it, directories and all
+      |        ^^^^^^
+    unknown variant `tree`, expected one of `markdown-files`, `bundle-dirs`, `markdown-tree`
+```
+
+On the screen the same row can be selected, and the preview shows those words. A key with no place is refused rather than passed over because `[[sources]]`, one letter too many, would otherwise add nothing and say nothing. Each file is read once, as the program starts.
+
 ## Where it is headed
 
 ```
@@ -143,7 +192,7 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 | **M7** ✅ | The tree — skills open onto their supporting files and `docs/` onto its directories; search reads supporting files; what cannot be read is a row | **recursive data structures**, `Box` and `Vec` |
 | **M8** ✅ | Code block highlighting + scrolling — the wheel scrolls the preview, a drag can select past the rows in view | `syntect`, state management |
 | **M9** ✅ | `$EDITOR` delegation + file watching — `e` opens the editor, and the screen follows what changes on disk | `std::process`, **threads & channels** |
-| **M10** | Config file (extra sources, ordering) | `serde`, TOML, `thiserror` |
+| **M10** ✅ | Config files — `.agentdocs.toml` at home and at a project's root add sources and set their order; one that cannot be used says why where its sources would have been | `serde`, TOML, `thiserror` |
 | **M11** | Distribution — multi-platform binaries, install scripts, CI | release profiles, cross-compilation |
 
 > The theory, syntax, and pitfalls collected at each milestone live in [`docs/learn/`](docs/learn/) as a concept-by-concept knowledge base — the evidence for *what was actually learned*.

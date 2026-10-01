@@ -35,7 +35,7 @@ fn md_files(dir: &Path) -> io::Result<Walked> {
 ```
 
 - `?` is allowed **only in a function that returns `Result`** (or `Option` — see below). You cannot bolt it onto a function that promises a bare value; you have to declare the failure first.
-- On `Err` it converts through `From`, which is what lets one function propagate several error types. With a single error type there is nothing to convert, and no reason yet for a crate like `thiserror`.
+- On `Err` it converts through `From`, which is what lets one function propagate several error types. With a single error type there is nothing to convert, and through M9 there was no reason for a crate like `thiserror`; M10's config files brought a second type, and an error type of the program's own ([[error-types]]).
 - **`io::Result<T>` is an alias for `Result<T, io::Error>`**, defined in `std::io`. Most of the standard library's file operations return it.
 
 ### `?` works on `Option` too
@@ -147,8 +147,9 @@ This is a swallow, chosen on purpose: `env::home_dir()` returns a bare `Option` 
 - **`Result` is iterable, so a wrong loop still compiled into something.** With `entries` accidentally left as a `Result`, `for entry in &entries` did not fail with "not an iterator" — `Result` yields one item on `Ok` and none on `Err`, so `entry` became `&Vec<Entry>` and the error read `no field 'name' on type '&Vec<Entry>'`. The loop was not dead; it was running once around the wrong thing.
 - **In a recursive function the compiler believes the signature, not the body.** With `md_tree`'s body rewritten but its return type still `io::Result<Vec<Entry>>`, the error landed on `out.absorb(sub)` twelve lines below — because the type of the recursive call comes from the *declaration*. The error surfaces where the contradiction shows, not where the cause is.
 - **Which layer an `Err` comes back in.** In M9's slice 1, a failure of `enable_raw_mode()?` after the editor had ended was taken to come back as `Ok(Err(e))`, in the inner layer, and an outer `Err` to mean the editor could not be started. Two questions showed that what `?` does was known exactly — *it returns there, with the error* — and what was missing was which of the two layers that error is. Written out as `match … { Err(e) => return Err(e), … }`, with *the only line that wraps in `Ok` is the last*, it was answered right in a new shape: a function whose `b?` comes before `Ok(a)` returns `Err("outer")`. Settled.
+- **The system's words let back in, past this page's own rule.** M10's slice 2 printed, under a config file that would not read, the `io::Error` itself, as it prints the parser's words under one that would not parse — and the section above settles that the system's words come in the machine's language. The test written for it passed, because the failure it used, a file that is not UTF-8, is one Rust words itself, in English; a file held open would have printed Windows' Korean. Found by the assistant while writing [[error-types]], and put back: a file that will not read is given its reason by `reason`, like everything else that will not read.
 - **Swallowing and handling look identical.** `let Ok(item) = item else { continue }` and `let Ok(item) = item else { out.unreadable += 1; continue }` are the same construct; the difference is entirely in whether the `else` body records anything. `let ... else` was never the problem — an empty `else` was.
 
 ## Related
 
-[[option-and-match]] · [[fs-read-dir]] · [[file-types-and-links]] · [[testing]] · [[owned-vs-borrowed-pairs]] · [[drop-and-unwinding]] · [[processes]]
+[[option-and-match]] · [[fs-read-dir]] · [[file-types-and-links]] · [[testing]] · [[owned-vs-borrowed-pairs]] · [[drop-and-unwinding]] · [[processes]] · [[error-types]]

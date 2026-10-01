@@ -74,6 +74,16 @@ The backends do not behave alike, and what one does is not shown by another:
 
 Both rows of the Linux column are notify's defaults, and neither suits the screen. Followed links would be watched into, which a Walk never does ([ADR-0007](../../adr/0007-links-are-listed-not-followed.md)); and the Walks open every file they read, so every reading would be reported, and taken for a change, would set off the next. The first is a setting, `Config::default().with_follow_symlinks(false)`; the second is what the closure handed to notify leaves out ([[channels]]). Neither was run on Linux, which was not at hand. The closure is tested by calling it with a report of an open made up for the purpose; the setting cannot be tested here at all — the Windows backend does not read it — and turning it back on passes every test on this machine ([ADR-0011](../../adr/0011-changes-are-heard-not-polled.md)).
 
+## Crates already built: serde and thiserror (M10)
+
+M10's config files ([[serde]], [[toml]], [[error-types]]) asked for three crates, and two of them were here already. syntect reads its packed language definitions with serde, and both ratatui and syntect report their errors through thiserror 2, so `serde` with its derive, `serde_derive` and `thiserror` were being compiled for them all along; named as dependencies of agentdocs, they compiled nothing new. The third, `toml`, turns on by default a writer of TOML, `toml_writer`, which a program that only reads does not call; with
+
+```toml
+toml = { version = "1.1.6", default-features = false, features = ["parse", "serde", "std"] }
+```
+
+it cost five compiled crates — `toml`, `toml_parser`, `toml_datetime`, `serde_spanned` and `winnow`. `Cargo.lock` grew by eight, 205 to 213: the writer, `indexmap` and a second `hashbrown` are locked, behind features nothing turns on, and not built. toml asks for Rust 1.85, under this package's 1.87. The release binary went from 3.81 MB to 4.08 MB.
+
 ## A crate's traits come with it
 
 Most of what a crate adds to types you already have arrives as trait methods, and those exist only where the trait is imported: `use std::io::IsTerminal;` for `stdout().is_terminal()`, `use base64::Engine;` for `STANDARD.encode(…)`. See [[traits]].
@@ -85,4 +95,4 @@ Most of what a crate adds to types you already have arrives as trait methods, an
 
 ## Related
 
-[[modules]] · [[traits]] · [[event-loop]] · [[statics]] · [[integer-overflow]] · [[channels]] · [[file-types-and-links]]
+[[modules]] · [[traits]] · [[event-loop]] · [[statics]] · [[integer-overflow]] · [[channels]] · [[file-types-and-links]] · [[serde]] · [[toml]]

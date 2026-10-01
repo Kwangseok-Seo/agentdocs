@@ -59,6 +59,8 @@ An enum has no obvious first value, so `EntryKind` has no `Default`, and neither
 
 `#[derive(PartialEq)]` writes `==` the same way, field by field, and M9 needed it to tell whether a Walk found anything new: `Walked`, `Node`, `Entry` and `EntryKind` derive it, and two Walks are equal when every row is — names, paths, descriptions and the whole text of every file. `io::Error` does not implement `PartialEq`, so a failed Walk cannot be compared that way; `source::same` compares two failures by their `kind()`, which can be ([[result-and-errors]]). Comparing two Walks of everything this machine showed with this repository as the project — 100 files and 834 KB of text, before M9's own pages were written — took 26 µs.
 
+Derives are not only the standard library's. M10's `#[derive(Deserialize)]` is serde's and writes how a type is read out of a file ([[serde]]); `#[derive(thiserror::Error)]` writes an error's words and its `From`s ([[error-types]]). And `Scope` gained `#[derive(Clone, Copy, PartialEq)]`: `Copy`, so that a closure called once a row can hand a copy of it to each Source ([[closures]]); `PartialEq`, so that a config file's problem can be kept with the scope it belongs to and picked out by it with `==`.
+
 ## Bounds: "any type, as long as…"
 
 The standard library's `all`:
@@ -83,6 +85,8 @@ fn search_terms(args: impl Iterator<Item = String>) -> Vec<String>
 std::env::Args
 alloc::vec::into_iter::IntoIter<alloc::string::String>
 ```
+
+M10's `Source::new(name: impl Into<String>, …)` is the same short form with a standard trait: anything that can become a `String`. A `&str` becomes one by being copied, a `String` by being moved in, so the built-in table's names and the names read from a config file both fit, and only the first are copied. `Into` is the other half of `From`: implementing `From<A>` for `B` gives `Into<B>` for `A` ([[error-types]]).
 
 ## Why M4 defines no trait of its own
 

@@ -15,3 +15,4 @@ An index of the settled design decisions in this repository. Check the relevant 
 | [0009](0009-unreadable-is-a-row-where-it-was-found.md) | What a Walk could not read is a row where it was found | accepted (replaces the third paragraph of 0006) |
 | [0010](0010-the-editor-runs-through-the-shell.md) | The editor is run by the platform's shell, and the path never goes through the shell's reading of a line | accepted |
 | [0011](0011-changes-are-heard-not-polled.md) | Changes on disk are heard from the system, and what to watch follows each Walk | accepted |
+| [0012](0012-config-files-sit-where-their-sources-do.md) | Config files sit where their Sources do, and one that cannot be used is a row | accepted |

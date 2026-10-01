@@ -42,6 +42,8 @@ error[E0004]: non-exhaustive patterns: `&Node::Unreadable { .. }` not covered   
 
 `unread`, written as `if let Node::Unreadable … else if let Some(rows) = node.children()`, builds either way. There that is right — *anything else* is what it means — but it is also a place a new variant passes through unannounced. A `match` with `_ =>` is the same.
 
+M10 saw the other side of it, the check at work: a config file's `Problem` gained a third variant, `Order`, and the build stopped at the one `match` that then chose a word for each — `non-exhaustive patterns: `&config::Problem::Order(_)` not covered` ([[error-types]]). The other places that looked at a `Problem` then asked about one variant, or turned every one into its words, and were right as they were. Two of them name every variant now, and a fourth would stop the build at three places.
+
 ## Two kinds of nothing
 
 A Bundle's `inside` is `Option<Vec<Node>>`, and its two empty values say different things:

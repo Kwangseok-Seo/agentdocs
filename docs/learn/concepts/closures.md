@@ -116,7 +116,15 @@ A test can call what `tell` returns the way notify would, with a report made up 
 ## Pitfalls hit
 
 - **Calling and handing over told apart by the parentheses.** In M8, `static START: Instant = Instant::now();` was picked as compiling and `static START: LazyLock<Instant> = LazyLock::new(Instant::now);` as not. The first calls `now` while the program is compiled, which cannot be done (E0015); the second hands `now` over, and compiles. See [[statics]]. In M9's slice 1 it came back as `chosen(env::var_os())`, picked as the one form that compiles: E0061 — the call is missing its argument — and E0277, since what it would return is not something to call. Two questions found how the parentheses were being read: `env::var_os` as the function itself, which is right, and `env::var_os()` as a way of writing that something is a function, as documentation does. Then a function that prints showed when each runs, and in slice 2 `read_input(event::read, …)` was picked over `event::read()` at the first attempt. Settled.
-- **An argument is worked out before the call, whether it is used or not (not settled).** With `VISUAL` set, so that no default is needed, `Some(…).unwrap_or(fallback())` and `.unwrap_or_else(fallback)` were both picked as never running `fallback`. The first runs it — its argument is worked out on that line, before `unwrap_or` is called, though `unwrap_or` then throws it away; only the second hands `fallback` over to be called if it is needed. It has not been asked again.
+- **An argument is worked out before the call, whether it is used or not (not settled).** With `VISUAL` set, so that no default is needed, `Some(…).unwrap_or(fallback())` and `.unwrap_or_else(fallback)` were both picked as never running `fallback`. The first runs it — its argument is worked out on that line, before `unwrap_or` is called, though `unwrap_or` then throws it away; only the second hands `fallback` over to be called if it is needed. It has not been asked again: M10 ran without quizzes, at the author's request.
+- **Moving a captured value out of a closure called more than once.** M10's `config::add` makes a Source of each row in `.map(|row| … Source::new(row.name, path, scope, row.walk))`, and `scope` came from outside. `map` calls its closure once a row, so the closure is `FnMut`, and handing `scope` to `Source::new` by value would move it out on the first call, leaving nothing for the second — the assistant's first build said so:
+
+  ```
+  error[E0507]: cannot move out of `scope`, a captured variable in an `FnMut` closure
+  note: if `source::Scope` implemented `Clone`, you could clone the value
+  ```
+
+  `Scope` is a tag with no data, so it now derives `Clone, Copy`, and each call copies it. Deriving only `Clone`, or writing `move |row|`, gave the same E0507; `&scope` gave E0308, since `Source::new` wants a `Scope`.
 
 ## Related
 

@@ -35,11 +35,12 @@ Goal 2 is the constraint that does not show up in the code. The workflow below e
 - **Screen or listing.** A bare `agentdocs` at a terminal opens the screen; words, or stdout that is not a terminal, print the listing. See `docs/adr/0008-*.md`. The core is still verified through the listing.
 - **The editor** is run by the platform's shell, and the file's path is kept out of the line the shell reads. See `docs/adr/0010-*.md`.
 - **Watching.** A change on disk is heard from the system, through notify, and what to watch follows each Walk. See `docs/adr/0011-*.md`.
+- **Config files.** `.agentdocs.toml` at home adds global Sources, and at a project's root that project's; each orders its scope's Sources by name, and one that cannot be used is a row where its Sources would have been. See `docs/adr/0012-*.md`.
 
 ## Layout (grow it as needed — never pre-create empty directories)
 
 - `src/main.rs` — the command line, the source table, and the choice between screen and listing.
-- `src/source.rs` · `src/entry.rs` · `src/frontmatter.rs` — where to look, what one Entry is and the tree a Walk builds of them, how fields are read.
+- `src/source.rs` · `src/entry.rs` · `src/frontmatter.rs` — where to look, what one Entry is and the tree a Walk builds of them, how fields are read. `src/config.rs` — the config files, read into Sources and their order.
 - `src/listing.rs` — the lines of the listing, and `printable`, which every name and description passes on its way to a terminal. `src/tui.rs` — the screen, and the threads that feed its loop. `src/editor.rs` — which editor a file is handed to, and the command that runs it. `src/markdown.rs` — a file drawn as Markdown for the preview. `src/highlight.rs` — a line of code in the colours of its language. `src/testutil.rs` — fixtures shared by the tests.
 - `docs/adr/` — architecture decision records.
 - `docs/learn/` — the Rust learning wiki (`index.md` + `concepts/` + `milestones/`).

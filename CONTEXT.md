@@ -16,6 +16,10 @@ _Avoid_: level, range, context
 The rule a Source carries for what counts as one Entry inside it, and how deep to look for one.
 _Avoid_: traversal, scan, strategy
 
+**Config file**:
+A file named `.agentdocs.toml`, at home or at a project's root, that adds Sources to one Scope and sets the order of that Scope's Sources.
+_Avoid_: settings, preferences, dotfile
+
 **Entry**:
 One listable, readable unit. Either a single file or one Bundle.
 _Avoid_: item, document, file
@@ -40,6 +44,7 @@ _Avoid_: snippet, match line, excerpt
 
 - A **Source** has exactly one **Scope**
 - A **Source** has exactly one **Walk**
+- A **Config file** speaks for exactly one **Scope** — `Global` at home, `Project` at a project's root — and adds zero or more **Sources** to it
 - A **Source** holds zero or more **Entries**
 - An **Entry** is either a single file or one **Bundle**
 - A **Bundle** has exactly one **Lead** and zero or more supporting files
@@ -56,6 +61,9 @@ _Avoid_: snippet, match line, excerpt
 >
 > **Dev:** `~/.claude/rules` and `~/.claude/skills` are both one directory deep. Why do they need different rules?
 > **Author:** Because a subdirectory means opposite things in the two. Under `rules` it is not an **Entry** at all; under `skills` it *is* one — a **Bundle**. That difference is the **Walk**, and it belongs to the **Source**, not to the code that reads it.
+>
+> **Dev:** `session-seal` keeps its documentation in `Sessions/` and `Wiki/`. Is that a new **Walk**?
+> **Author:** No — two new **Sources**, written in a **Config file** at its root: `Sessions` walked as a tree, `Wiki` as one level of files. The **Config file** at the root makes them **Project** Sources; written in the one at home, they would be **Global**, and their paths taken from the home directory.
 >
 > **Dev:** If the same skill name exists both globally and in the project, do we merge them?
 > **Author:** No. Different **Scope** means a different **Source**, so both appear. Which one you are looking at must never get lost.

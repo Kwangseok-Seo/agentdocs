@@ -103,6 +103,8 @@ enum Message {
 
 The loop's `match` on it has to say what each is done with, and a third kind added later would be refused until it did.
 
+M10 has the same shape for errors: `config::Problem` is an `io::Error` *or* a `toml::de::Error` — later also an `order` naming no Source — because a function's `Result` carries one error type ([[error-types]]). A variant that holds data is also a function from that data to the enum, so `map_err(Problem::Parse)` hands it over by its name, as `[1, 2].map(Some)` hands over `Some`.
+
 ## Pitfalls hit — variant names must exclude each other
 
 The first names proposed for the three [[structs]] traversal rules were `entries`, `bundleDirs`, `LeadDirs`. Two problems, both worth generalising:
