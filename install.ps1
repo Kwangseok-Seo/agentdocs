@@ -52,17 +52,18 @@ Write-Host "agentdocs: installed $said as $(Join-Path $dir 'agentdocs.exe')"
 if ($env:AGENTDOCS_NO_MODIFY_PATH -eq '1') {
     Write-Host "agentdocs: PATH left as it was"
 } else {
-    # The user's PATH as stored — `%USERPROFILE%` and all, not expanded — and
-    # written back as the kind of value it was, so that no entry of it changes.
+    # The user's PATH as stored — `%USERPROFILE%` and all, not expanded — with
+    # the directory put after it, and written back as the kind of value it
+    # was: nothing that was there changes, a `;` at its end included.
     $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
     try {
         $stored = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        $entries = @($stored -split ';' | Where-Object { $_ })
-        if ($entries -contains $dir) {
+        if (($stored -split ';') -contains $dir) {
             $added = $false
         } else {
             $kind = if ($stored) { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
-            $key.SetValue('Path', (($entries + $dir) -join ';'), $kind)
+            $joined = if ($stored -eq '' -or $stored.EndsWith(';')) { "$stored$dir" } else { "$stored;$dir" }
+            $key.SetValue('Path', $joined, $kind)
             $added = $true
         }
     } finally {

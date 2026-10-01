@@ -131,6 +131,7 @@ jobs:
   try-installers:
     needs: assemble
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -181,10 +182,11 @@ jobs:
           $exe = Join-Path $env:LOCALAPPDATA 'Programs\agentdocs\bin\agentdocs.exe'
           $said = & $exe --version
           if ($said -ne "agentdocs $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "the binary says $said" }
-          # Added to the user's PATH once, after what was there.
+          # Added to the user's PATH once, after what was there, which is kept.
           $after = [Environment]::GetEnvironmentVariable('Path', 'User')
           $dir = Split-Path $exe
-          if ($after -ne "$before;$dir" -and $after -ne $dir) { throw "PATH went from '$before' to '$after'" }
+          $rest = if ($after.StartsWith("$before")) { $after.Substring("$before".Length) }
+          if ($rest -ne $dir -and $rest -ne ";$dir") { throw "PATH went from '$before' to '$after'" }
 
   publish:
     needs: try-installers
