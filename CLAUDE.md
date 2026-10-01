@@ -36,7 +36,7 @@ Goal 2 is the constraint that does not show up in the code. The workflow below e
 - **The editor** is run by the platform's shell, and the file's path is kept out of the line the shell reads. See `docs/adr/0010-*.md`.
 - **Watching.** A change on disk is heard from the system, through notify, and what to watch follows each Walk. See `docs/adr/0011-*.md`.
 - **Config files.** `.agentdocs.toml` at home adds global Sources, and at a project's root that project's; each orders its scope's Sources by name, and one that cannot be used is a row where its Sources would have been. See `docs/adr/0012-*.md`.
-- **Releases.** A tag `v<version>` builds five targets and publishes them as a GitHub release, archives named by target, only after both install scripts have installed them on three systems. See `docs/adr/0013-*.md`.
+- **Releases.** A tag `v<version>` builds five targets and publishes them as a GitHub release, archives named by target, only after both install scripts have installed them on three systems. See `docs/adr/0013-*.md`. Each archive carries the licences of what the binary is built from, read from files, or the release stops. See `docs/adr/0014-*.md`.
 
 ## Layout (grow it as needed — never pre-create empty directories)
 
@@ -44,7 +44,7 @@ Goal 2 is the constraint that does not show up in the code. The workflow below e
 - `src/source.rs` · `src/entry.rs` · `src/frontmatter.rs` — where to look, what one Entry is and the tree a Walk builds of them, how fields are read. `src/config.rs` — the config files, read into Sources and their order.
 - `src/listing.rs` — the lines of the listing, and `printable`, which every name and description passes on its way to a terminal. `src/tui.rs` — the screen, and the threads that feed its loop. `src/editor.rs` — which editor a file is handed to, and the command that runs it. `src/markdown.rs` — a file drawn as Markdown for the preview. `src/highlight.rs` — a line of code in the colours of its language. `src/testutil.rs` — fixtures shared by the tests.
 - `tests/cli.rs` — the binary run as people run it, in a home made for each test.
-- `.github/workflows/` — `ci.yml`, the tests on Linux, macOS and Windows; `release.yml`, what a tag builds and publishes. `install.sh` · `install.ps1` — the install scripts each release carries. `.cargo/config.toml` — the C runtime linked into the Windows binary.
+- `.github/workflows/` — `ci.yml`, the tests on Linux, macOS and Windows; `release.yml`, what a tag builds and publishes. `install.sh` · `install.ps1` — the install scripts each release carries. `.cargo/config.toml` — the C runtime linked into the Windows binary. `about.toml` · `about.hbs` — what `.github/third-party-licenses.sh` writes `THIRD-PARTY-LICENSES.txt` from, with cargo-about.
 - `docs/adr/` — architecture decision records.
 - `docs/learn/` — the Rust learning wiki (`index.md` + `concepts/` + `milestones/`).
 - `CONTEXT.md` — domain glossary (glossary only).

@@ -23,7 +23,7 @@ jobs:
       - run: cargo test --locked
 ```
 
-A **matrix** makes one job into several, one for each value: the same steps on three systems. `ci.yml` is that, and a fourth job that runs the tests on the oldest Rust `Cargo.toml` claims, `rust-version`, read out of the file rather than written a second time. The first run took 3 minutes on Linux, 1 on macOS, and 8¾ on Windows, all green.
+A **matrix** makes one job into several, one for each value: the same steps on three systems. `ci.yml` is that, and a fourth job that runs the tests on the oldest Rust `Cargo.toml` claims, `rust-version`, read out of the file rather than written a second time. The first run took 3 minutes on Linux, 1 on macOS, and 8¾ on Windows, all green. A fifth job, added after M11, writes the third-party licences a release would carry, so that a dependency whose licence cannot be read fails a push rather than a release ([[licences]]).
 
 ## SKIPPED is a failure there
 
@@ -31,13 +31,13 @@ A test that cannot build its fixture — a link, a path it cannot read, a shell 
 
 ## The release workflow
 
-`release.yml` runs on a tag, `v*`, as four jobs, each waiting on the one before:
+`release.yml` runs on a tag, `v*`, as five jobs, each waiting on the one before:
 
 ```
-build (×5 targets) ──▶ assemble ──▶ try-installers (×3 systems) ──▶ publish
+notices ──▶ build (×5 targets) ──▶ assemble ──▶ try-installers (×3 systems) ──▶ publish
 ```
 
-`build` compiles each target and runs it ([[cross-compilation]]); `assemble` puts the archives, `SHA256SUMS` and the install scripts together; `try-installers` serves those files from the runner itself, in the layout GitHub serves a release in, and runs each install script against them with only the repository's address changed; `publish` makes the release, and is the only job allowed to write to the repository. A step that fails stops everything after it, so nothing reaches the release page that was not installed first.
+`notices` writes `THIRD-PARTY-LICENSES.txt` once, for every archive ([[licences]]); `build` compiles each target, runs it ([[cross-compilation]]) and packs it; `assemble` puts the archives, `SHA256SUMS` and the install scripts together; `try-installers` serves those files from the runner itself, in the layout GitHub serves a release in, and runs each install script against them with only the repository's address changed; `publish` makes the release, and is the only job allowed to write to the repository. A step that fails stops everything after it, so nothing reaches the release page that was not installed first.
 
 ## Pinning what runs
 
@@ -54,4 +54,4 @@ On a private repository GitHub counts minutes, and a minute on Windows as two, o
 
 ## Related
 
-[[testing]] · [[cross-compilation]] · [[release-profiles]] · [[platform-differences]]
+[[testing]] · [[cross-compilation]] · [[release-profiles]] · [[platform-differences]] · [[licences]]

@@ -46,6 +46,7 @@ A wiki of the **Rust and tooling knowledge** accumulated while building agentdoc
 - [[cross-compilation]] — a target as a triple, the standard library and the linker each one needs, checking without a linker, musl for every Linux, and the C runtime linked into Windows
 - [[platform-differences]] — what the same code met elsewhere: the order a directory is read in, a path no one may read, a link the system resolves, and the reason a test expected
 - [[continuous-integration]] — workflows, jobs and a matrix, `SKIPPED` as a failure, a release that waits on its installers, actions pinned by commit, and what a run costs
+- [[licences]] — a crate's licence as an SPDX expression, what a binary owes the crates in it, what a binary holds that is not a crate, and cargo-about's quiet template
 
 ## Milestones (`milestones/`)
 

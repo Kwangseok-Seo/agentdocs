@@ -16,4 +16,5 @@ An index of the settled design decisions in this repository. Check the relevant 
 | [0010](0010-the-editor-runs-through-the-shell.md) | The editor is run by the platform's shell, and the path never goes through the shell's reading of a line | accepted |
 | [0011](0011-changes-are-heard-not-polled.md) | Changes on disk are heard from the system, and what to watch follows each Walk | accepted |
 | [0012](0012-config-files-sit-where-their-sources-do.md) | Config files sit where their Sources do, and one that cannot be used is a row | accepted |
-| [0013](0013-releases-come-from-a-tag-and-the-installers-are-tried-first.md) | Releases come from a tag, one archive per target, and the install scripts are tried on them first | accepted |
+| [0013](0013-releases-come-from-a-tag-and-the-installers-are-tried-first.md) | Releases come from a tag, one archive per target, and the install scripts are tried on them first | accepted (what an archive holds added to by 0014) |
+| [0014](0014-every-archive-carries-the-licences-of-what-it-is-built-from.md) | Every release archive carries the licences of what its binary is built from | accepted (adds to what an archive holds in 0013) |

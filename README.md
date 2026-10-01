@@ -232,3 +232,5 @@ Requires Rust 1.87 or newer. (The 2024 edition needs 1.85, but `std::env::home_d
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE), at your option.
+
+Each release archive also carries `THIRD-PARTY-LICENSES.txt`: the licences of the crates the binary is built from, of the Rust standard library, of musl in the Linux binaries, and of the syntax definitions it embeds to colour code ([ADR-0014](docs/adr/0014-every-archive-carries-the-licences-of-what-it-is-built-from.md)). The install scripts keep only the binary; the file is in the archive on the [releases page](https://github.com/Kwangseok-Seo/agentdocs/releases).
