@@ -42,6 +42,10 @@ A wiki of the **Rust and tooling knowledge** accumulated while building agentdoc
 - [[channels]] — `Sender` and `Receiver`, waiting with and without a limit, two kinds of message in one enum, a channel going back, and a closure another thread calls
 - [[serde]] — text into values without either side knowing the other: the format, the shape and the derive between them, names taken from the enum, and a field missing or one too many
 - [[toml]] — keys, tables and arrays of tables, a key that belongs to the header above it, one table where an array is wanted, and what an error carries
+- [[release-profiles]] — what `--release` builds with: stripping, link-time optimisation, one codegen unit, optimising for size, and why a panic still unwinds — each measured
+- [[cross-compilation]] — a target as a triple, the standard library and the linker each one needs, checking without a linker, musl for every Linux, and the C runtime linked into Windows
+- [[platform-differences]] — what the same code met elsewhere: the order a directory is read in, a path no one may read, a link the system resolves, and the reason a test expected
+- [[continuous-integration]] — workflows, jobs and a matrix, `SKIPPED` as a failure, a release that waits on its installers, actions pinned by commit, and what a run costs
 
 ## Milestones (`milestones/`)
 
@@ -58,3 +62,4 @@ The journey log: what was built, which concepts it required, and which pitfalls 
 - [M8](milestones/M8.md) — scrolling, a selection past the rows in view, and code in colour
 - [M9](milestones/M9.md) — the editor, and a screen that follows the disk
 - [M10](milestones/M10.md) — config files
+- [M11](milestones/M11.md) — distribution: three systems, five binaries, two installers

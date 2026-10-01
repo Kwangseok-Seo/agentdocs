@@ -50,7 +50,23 @@ let made = std::os::unix::fs::symlink(target, link);
 
 Windows grants that privilege to administrators and to accounts with Developer Mode enabled, so it can fail where the rest of the suite runs fine. A test that cannot build its fixture must not report success quietly: this one prints `SKIPPED` with the error kind to stderr and returns, and `cargo test -- --nocapture | grep -c SKIPPED` says whether that ever happened.
 
-**A file or directory that refuses to be read** could not be built this way until M7. Removing your own read permission takes `icacls` on Windows and `chmod` on Unix, so from M3 the paths that report something unreadable had no automated test. On Windows there is another way: a handle can refuse to share. `testutil::hold` opens the path with `share_mode(0)` — and, for a directory, the flag without which one cannot be opened at all — and until that handle is dropped, anything else that opens the path gets *sharing violation*, os error 32, which the listing shows as `unreadable`. Since M7 those paths have tests on Windows; on other systems the same tests print `SKIPPED`.
+**A file or directory that refuses to be read** could not be built this way until M7. Removing your own read permission takes `icacls` on Windows and `chmod` on Unix, so from M3 the paths that report something unreadable had no automated test. On Windows there is another way: a handle can refuse to share. `testutil::hold` opens the path with `share_mode(0)` — and, for a directory, the flag without which one cannot be opened at all — and until that handle is dropped, anything else that opens the path gets *sharing violation*, os error 32, which the listing shows as `unreadable`. Since M7 those paths have tests on Windows. Since M11 they have them on Unix too: there `hold` takes the path's permissions away and gives them back when dropped — leaving a directory the one permission that lets a name inside it be looked up, so that it is the same situation as on Windows — tries the path as a Walk would, and hands the test the error it met, since the reason is the platform's ([[platform-differences]]). Root reads whatever the permissions say, so there the test still prints `SKIPPED`.
+
+## The binary, run as people run it (M11)
+
+A file in `tests/` beside `src/` is an **integration test**: a crate of its own, which cannot see the program's modules at all — only what is outside it. For a binary, that is the program itself, and cargo says where it built it: `env!("CARGO_BIN_EXE_agentdocs")`. `tests/cli.rs` makes a home and a project for each test, starts the program in a directory of it with `HOME` and `USERPROFILE` pointing there — what `env::home_dir` reads on each system — and reads what it printed into a pipe:
+
+```rust
+let out = Command::new(env!("CARGO_BIN_EXE_agentdocs"))
+    .args(words)
+    .current_dir(cwd)
+    .env("HOME", home)
+    .env("USERPROFILE", home)
+    .output()
+    .unwrap();
+```
+
+That is the only place `main` is tested: the source table, the project found above the current directory, the config file at home, `--version`. One test reads six bytes and closes the pipe on a listing longer than a pipe holds, so that the program is still writing when its reader goes: with `write_listing` where `main` calls `print_listing`, it exits 1 with `BrokenPipe` — os error 232 on Windows, 32 on Linux. Of ten mutations of `main`, ten failed a test ([[continuous-integration]] runs them on three systems).
 
 ## A green suite is not evidence
 
@@ -89,6 +105,7 @@ Five of those rows did not exist until a reviewer pointed out that **the entire 
 - **Mutations that cannot fail here.** cmd's `/v:off` and `/d` guard against registry settings this machine does not have; `with_follow_symlinks(false)` is read by notify's backends for Linux and the BSDs, not Windows. Each survives every test on this machine, and is kept for the machines where it matters.
 - **Two tests handed one directory.** Every fixture directory is named by the test that asks for it, and M10's test of an `order` naming no Source took `main-order` — the name the test of where the project heading goes had used since M5. Run together on parallel threads, each emptied the directory the other was writing, and the new test failed; run alone, it passed. The harness caught it, running the copy unmutated before any mutation. A script that counts the names over every test module then found none given out twice; it was run once, and is not one of the tests.
 - **A mutation only a long list can catch.** `config::add` sorts the Sources by where `order` names them, and the ones it does not name must keep the order they came in — a stable sort. With `sort_unstable_by_key` in its place, every test passed: below twenty items the standard library's unstable sort is an insertion sort, which keeps equal items in order anyway. A test with a hundred Sources and one named turned it red.
+- **A build from other code, taken for this code's.** M11 ran the tests on Linux in a container, unpacking the tree into it with `tar` and keeping cargo's build directory between runs. A mutation run left its build there; the next run, of the real tree, failed one test the real code passes — and its log had no `Compiling agentdocs` line. `tar` had given every file the time it had on this machine, older than that build, and cargo decides whether a file changed by its time. Unpacked with `tar -m`, every file is as new as the unpacking, and the run passed.
 - **A guard tested on the input the author of the guard imagined.** Copying skipped a drag over blanks by checking `text.is_empty()`, and the test dragged within one blank row. The author dragged across two in a real terminal: the rows joined into `"\n"`, which is not empty, and "copied to clipboard" appeared. The rule had been written as *nothing but blanks* and coded as *the empty string*; `!text.trim().is_empty()` is the rule as written, and the two-row case is now in the test.
 
 ## What the environment holds, handed in (M9)
@@ -119,4 +136,4 @@ M5's screen is tested the way the listing is: by keeping judgement out of the pa
 
 ## Related
 
-[[result-and-errors]] · [[fs-read-dir]] · [[file-types-and-links]] · [[structs]] · [[event-loop]] · [[threads]] · [[processes]]
+[[result-and-errors]] · [[fs-read-dir]] · [[file-types-and-links]] · [[structs]] · [[event-loop]] · [[threads]] · [[processes]] · [[platform-differences]] · [[continuous-integration]]

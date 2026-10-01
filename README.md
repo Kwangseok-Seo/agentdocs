@@ -13,7 +13,7 @@ So this repository is not a finished codebase. It is a **record of something gro
 
 ## Status
 
-**M10 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries **as a tree**, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks **coloured by their language**, tables, and frontmatter without its fences. A skill **opens onto its supporting files**, and a project's `docs/` onto its directories. `j`/`k` or the arrows move, `l`/`h` open and close a row, `Tab` goes round the panes, a click selects, **the wheel or Page Down scrolls the preview**, and **dragging across it copies the text** to the clipboard — held past its edge, the drag scrolls it and keeps selecting. **`e` opens the selected file in your `$EDITOR`**, and the screen comes back with what you wrote; and when another program — an agent in the next pane — changes a file the screen shows, **the screen reads it again by itself**. A **config file** adds sources of your own, and sets the order the sources are shown in.
+**M11 complete** — typed at a terminal with no words, `agentdocs` opens a **screen of three panes**: the sources, the selected source's entries **as a tree**, and the selected entry's file **drawn as Markdown** — headings, bold and inline code, lists and quotes that keep their indent on every row, code blocks **coloured by their language**, tables, and frontmatter without its fences. A skill **opens onto its supporting files**, and a project's `docs/` onto its directories. `j`/`k` or the arrows move, `l`/`h` open and close a row, `Tab` goes round the panes, a click selects, **the wheel or Page Down scrolls the preview**, and **dragging across it copies the text** to the clipboard — held past its edge, the drag scrolls it and keeps selecting. **`e` opens the selected file in your `$EDITOR`**, and the screen comes back with what you wrote; and when another program — an agent in the next pane — changes a file the screen shows, **the screen reads it again by itself**. A **config file** adds sources of your own, and sets the order the sources are shown in. It is tested on **Linux, macOS and Windows** on every change, and a release carries a binary for each, with scripts that install it in one line — see [Install](#install).
 
 ```
 $ cd ~/projects/cli-maker && agentdocs        # a 120 x 18 terminal; skills, session-retro opened, RULE-FORMAT selected
@@ -193,9 +193,27 @@ One milestone = one Rust concept + one slice of functionality. Every milestone e
 | **M8** ✅ | Code block highlighting + scrolling — the wheel scrolls the preview, a drag can select past the rows in view | `syntect`, state management |
 | **M9** ✅ | `$EDITOR` delegation + file watching — `e` opens the editor, and the screen follows what changes on disk | `std::process`, **threads & channels** |
 | **M10** ✅ | Config files — `.agentdocs.toml` at home and at a project's root add sources and set their order; one that cannot be used says why where its sources would have been | `serde`, TOML, `thiserror` |
-| **M11** | Distribution — multi-platform binaries, install scripts, CI | release profiles, cross-compilation |
+| **M11** ✅ | Distribution — tests on three systems, five binaries built from a tag, install scripts tried on them before each release | release profiles, cross-compilation |
 
 > The theory, syntax, and pitfalls collected at each milestone live in [`docs/learn/`](docs/learn/) as a concept-by-concept knowledge base — the evidence for *what was actually learned*.
+
+## Install
+
+Each release has a binary for Linux (x86_64 and ARM, built static, so any distribution will do), macOS (Apple silicon and Intel) and Windows (x86_64), and two scripts that pick the right one, check it against the release's `SHA256SUMS`, and put it where your user can run it without an administrator ([ADR-0013](docs/adr/0013-releases-come-from-a-tag-and-the-installers-are-tried-first.md)).
+
+Linux and macOS, to `~/.local/bin`:
+
+```
+curl -fsSL https://github.com/Kwangseok-Seo/agentdocs/releases/latest/download/install.sh | sh
+```
+
+Windows, in PowerShell, to `%LOCALAPPDATA%\Programs\agentdocs\bin`, which it adds to your `PATH`:
+
+```
+irm https://github.com/Kwangseok-Seo/agentdocs/releases/latest/download/install.ps1 | iex
+```
+
+`AGENTDOCS_VERSION=v0.1.0` installs that release rather than the latest, and `AGENTDOCS_INSTALL_DIR` puts it in another directory; on Windows, `AGENTDOCS_NO_MODIFY_PATH=1` leaves `PATH` as it is. The archives can also be downloaded from the [releases page](https://github.com/Kwangseok-Seo/agentdocs/releases) by hand. With Rust installed, `cargo install --git https://github.com/Kwangseok-Seo/agentdocs` builds it instead. `agentdocs --version` says which you have.
 
 ## Design decisions
 

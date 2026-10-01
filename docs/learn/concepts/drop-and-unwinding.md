@@ -51,6 +51,10 @@ panic::set_hook(Box::new(move |info| {
 
 `take_hook` hands over the hook currently installed, and the new one calls it last. Installed after ratatui's, this one therefore runs first — mouse off, then raw mode — which is the order Windows needs.
 
+## A release that would abort instead
+
+`panic = "abort"` in a profile ends the process where it panicked, without unwinding — no `Drop` runs, and the hook does. The screen would still give the terminal back, since that is the hook's work; M11 measured what abort saves, and kept unwinding so that a `Drop` written later is not skipped without a word ([[release-profiles]]).
+
 ## `let _` drops at once; `let _name` does not
 
 ```rust
@@ -66,4 +70,4 @@ The leading underscore on `_last` only silences the unused-variable warning ([[m
 
 ## Related
 
-[[traits]] · [[ownership]] · [[event-loop]] · [[result-and-errors]] — a panic is for a bug; a failure the caller should handle is a `Result`
+[[traits]] · [[ownership]] · [[event-loop]] · [[result-and-errors]] — a panic is for a bug; a failure the caller should handle is a `Result` · [[release-profiles]]

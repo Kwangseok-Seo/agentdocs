@@ -19,6 +19,10 @@ p.to_path_buf()                       // borrowed -> owned
 root.display()                        // for printing
 ```
 
+## A path as written, and the path it leads to (M11)
+
+`starts_with`, `==` and `parent` work on a path's parts as written, and never ask the file system where they lead. `fs::canonicalize` does: it follows every link and returns the path that is left — on Windows with a `\\?\` in front, which is why the program only uses it when the path as written has failed. Unix reports the current directory already resolved, so with a home written through a link no directory was ever below it ([[platform-differences]]).
+
 ## Why there is no `Display`
 
 `Path` cannot be printed with `{}`. On some operating systems a path is not valid UTF-8, so Rust declines to implement `Display` for it. Printing goes through `.display()`.
@@ -38,4 +42,4 @@ One more: `extension()` returns `None` for `.gitignore`. A leading dot makes the
 
 ## Related
 
-[[owned-vs-borrowed-pairs]] · [[option-and-match]] · [[fs-read-dir]]
+[[owned-vs-borrowed-pairs]] · [[option-and-match]] · [[fs-read-dir]] · [[platform-differences]]

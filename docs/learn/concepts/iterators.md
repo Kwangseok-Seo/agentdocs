@@ -137,6 +137,7 @@ The inner `.map` is not the iterator's — it is `Option::map`, which changes th
 | `filter_map` → `min`, then `chars` → `skip` → `collect` | `around` |
 | `map` → `sum` over one character's lowercase form | `chars_before` |
 | `filter` → `collect` | `printable` (since M3) |
+| `peekable`, then `next_if` while a digit comes next | `number`, which reads a run of digits for the order rows are sorted in (M11, [[platform-differences]]) |
 
 ## Pitfalls hit
 

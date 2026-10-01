@@ -72,7 +72,7 @@ The backends do not behave alike, and what one does is not shown by another:
 | a file changed behind a link, below a directory watched whole | not reported — 0 reports, whichever path it was written through; the link watched by its own path, 2 | reported — notify follows links when it sets up watches below a directory |
 | a file opened or read | not reported: in the two threads' log, the reading that followed a change brought no report after it | reported, every open: notify asks inotify for them |
 
-Both rows of the Linux column are notify's defaults, and neither suits the screen. Followed links would be watched into, which a Walk never does ([ADR-0007](../../adr/0007-links-are-listed-not-followed.md)); and the Walks open every file they read, so every reading would be reported, and taken for a change, would set off the next. The first is a setting, `Config::default().with_follow_symlinks(false)`; the second is what the closure handed to notify leaves out ([[channels]]). Neither was run on Linux, which was not at hand. The closure is tested by calling it with a report of an open made up for the purpose; the setting cannot be tested here at all — the Windows backend does not read it — and turning it back on passes every test on this machine ([ADR-0011](../../adr/0011-changes-are-heard-not-polled.md)).
+Both rows of the Linux column are notify's defaults, and neither suits the screen. Followed links would be watched into, which a Walk never does ([ADR-0007](../../adr/0007-links-are-listed-not-followed.md)); and the Walks open every file they read, so every reading would be reported, and taken for a change, would set off the next. The first is a setting, `Config::default().with_follow_symlinks(false)`; the second is what the closure handed to notify leaves out ([[channels]]). Neither was run on Linux in M9, which was not at hand. The closure is tested by calling it with a report of an open made up for the purpose; the setting could not be tested on Windows at all — its backend does not read it — and turning it back on passed every test ([ADR-0011](../../adr/0011-changes-are-heard-not-polled.md)). In M11 the tests ran on Linux, and turned back on it still passed every one there too: no test changed a file behind a link below a watched tree. One does now, and that mutation fails on Linux ([[platform-differences]]).
 
 ## Crates already built: serde and thiserror (M10)
 
@@ -95,4 +95,4 @@ Most of what a crate adds to types you already have arrives as trait methods, an
 
 ## Related
 
-[[modules]] · [[traits]] · [[event-loop]] · [[statics]] · [[integer-overflow]] · [[channels]] · [[file-types-and-links]] · [[serde]] · [[toml]]
+[[modules]] · [[traits]] · [[event-loop]] · [[statics]] · [[integer-overflow]] · [[channels]] · [[file-types-and-links]] · [[serde]] · [[toml]] · [[release-profiles]] · [[cross-compilation]]
