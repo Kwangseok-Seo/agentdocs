@@ -62,8 +62,8 @@ _Avoid_: snippet, match line, excerpt
 > **Dev:** `~/.claude/rules` and `~/.claude/skills` are both one directory deep. Why do they need different rules?
 > **Author:** Because a subdirectory means opposite things in the two. Under `rules` it is not an **Entry** at all; under `skills` it *is* one — a **Bundle**. That difference is the **Walk**, and it belongs to the **Source**, not to the code that reads it.
 >
-> **Dev:** `session-seal` keeps its documentation in `Sessions/` and `Wiki/`. Is that a new **Walk**?
-> **Author:** No — two new **Sources**, written in a **Config file** at its root: `Sessions` walked as a tree, `Wiki` as one level of files. The **Config file** at the root makes them **Project** Sources; written in the one at home, they would be **Global**, and their paths taken from the home directory.
+> **Dev:** `session-seal` wants its `Wiki/` on a line of its own, above the 351 files of `root md`. Is that a new **Walk**?
+> **Author:** No — a new **Source**, written in a **Config file** at its root: `Wiki`, walked as one level of files. The **Config file** at the root makes it a **Project** Source; written in the one at home, it would be **Global**, and its path taken from the home directory. Its files stay in `root md` as well — a **Source** reports its own directory.
 >
 > **Dev:** If the same skill name exists both globally and in the project, do we merge them?
 > **Author:** No. Different **Scope** means a different **Source**, so both appear. Which one you are looking at must never get lost.
@@ -71,8 +71,8 @@ _Avoid_: snippet, match line, excerpt
 ## Flagged ambiguities
 
 - "skill" was used for two things — the unit Claude Code executes, and the row shown on our screen. Resolved: the row is an **Entry**; `skills` is used only as a **Source** name.
-- "docs" was used both as a **Source** name and as a general word for documentation. Resolved: `docs` names the **Source** backed by a repository's `docs/` directory; otherwise write "documentation".
+- "docs" was used both as a **Source** name and as a general word for documentation. Resolved: write "documentation" for the general sense. No **Source** is named `docs` since ADR-0015; `docs/` is only a directory, one of those a project's `root md` reads.
 - "traversal" and "walk" were both used for the rule that decides what an **Entry** is inside a **Source** — ADR-0003 writes "traversal rule" in prose. Resolved: the term is **Walk**.
-- "unreadable" was used both for a thing a **Walk** could not open and for anything a **Walk** passes over. Resolved: **Unreadable** is only what the Walk *could not look at*. What it looked at and rejected — a non-Markdown file, a link it will not follow — is not unreadable; it is skipped.
+- "unreadable" was used both for a thing a **Walk** could not open and for anything a **Walk** passes over. Resolved: **Unreadable** is only what the Walk *could not look at*. What it looked at and rejected — a non-Markdown file, a link it will not follow, a path a `.gitignore` leaves out — is not unreadable; it is skipped.
 - The line printed under a row during a search was called the "matched line", the "hit line", the "why line" and a "snippet". Resolved: it is the **Hit**.
 - The relationship above says a **Bundle** has exactly one **Lead**, yet a directory with no Lead is still listed. Resolved: the relationship states the well-formed shape; a directory in a Bundle **Source** that is missing its **Lead** is still a **Bundle**, a malformed one.

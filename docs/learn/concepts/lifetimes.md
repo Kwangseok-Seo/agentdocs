@@ -160,6 +160,20 @@ A closure handed to another thread is asked for `'static` too — `thread::spawn
 
 The other direction is free. The bar in front of a quote, `"│ "`, goes into a row of the file's pieces as it is: still a borrow of the binary, nothing copied (measured: `bar is Borrowed: "│ ", no String made`). A longer promise covers a shorter one. A shorter one cannot stand in for a longer, and in a `Vec<Span<'static>>` a single piece of the file is enough to refuse the whole vector.
 
+## A borrow of what a function made, inside what it returns (M12)
+
+A Walk carries down the rules of every `.gitignore` it has met, and `Ignored::and` adds the one in the directory it reads now. That `.gitignore` is read inside `and`. Kept as a borrow — `struct Ignored<'a>(Vec<&'a Gitignore>)` — it cannot be handed back:
+
+```
+error[E0515]: cannot return value referencing local variable `own`
+11 |         rules.0.push(&own);
+   |                      ---- `own` is borrowed here
+12 |         rules
+   |         ^^^^^ returns a value referencing data owned by the current function
+```
+
+It is the error in the last pitfall below, met through a struct rather than a bare `&`: no `&` is in sight in the return type, and the arrow still points at something `and` made and is about to drop. There are two ways out. The caller can own the `.gitignore` and lend it down — every directory's rules live in its own call of the Walk, which ends after the calls below it, so the borrows would hold — at the price of reading it and adding it as two steps. Or `and` can hand back what it made, owned: `Vec<Gitignore>`, each Walk below a directory copying the rules above it. A copy of only a pointer each, through `Rc`, was tried as well, and walking all of `~/projects` took as long either way — 373 ms and 378 ms, the median of five — since reading the files is what takes the time. The owned copy is what the code does.
+
 ## In this codebase
 
 `render` returns rows that all borrow from the file. Across this machine's 558 files, 126,552 of the 126,554 pieces of text the parser handed back were slices of the file, not copies. The price is that no row may outlive the Entry whose text it shows, and none does: the preview builds its rows, draws them and drops them within one frame.

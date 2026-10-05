@@ -27,14 +27,14 @@ Goal 2 is the constraint that does not show up in the code. The workflow below e
 ## Architecture (only what is settled — do not record what is undecided)
 
 - **Read-only viewer.** Editing is delegated to `$EDITOR`. See `docs/adr/0001-read-only-viewer.md`.
-- **Discovery.** Global sources are always listed wherever the binary runs; the project block follows the repository that contains the current directory. See `docs/adr/0002-*.md`.
+- **Discovery.** Global sources are always listed wherever the binary runs; the project block follows the repository that contains the current directory. See `docs/adr/0002-*.md`. That block is every Markdown file below the project's root, less what the `.gitignore` files met on the way down leave out, and the root's `.claude/`. See `docs/adr/0015-*.md`.
 - **Source definitions are data**, not code branches — including *how* each source is walked. Today the table holds Claude Code paths only. See `docs/adr/0003-*.md`.
 - **Project root** is found by walking up for a marker, falling back to the current directory. See `docs/adr/0004-*.md`.
 - **TUI framework**: ratatui (+ crossterm backend).
 - **Markdown**: parsed by pulldown-cmark; drawn, and cut into rows that fit the preview, by our own renderer. Code in a language syntect knows, Markdown aside, is coloured in the terminal's own palette.
 - **Screen or listing.** A bare `agentdocs` at a terminal opens the screen; words, or stdout that is not a terminal, print the listing. See `docs/adr/0008-*.md`. The core is still verified through the listing.
 - **The editor** is run by the platform's shell, and the file's path is kept out of the line the shell reads. See `docs/adr/0010-*.md`.
-- **Watching.** A change on disk is heard from the system, through notify, and what to watch follows each Walk. See `docs/adr/0011-*.md`.
+- **Watching.** A change on disk is heard from the system, through notify, and what to watch follows each Walk: each directory it read, alone. See `docs/adr/0011-*.md` and `docs/adr/0015-*.md`.
 - **Config files.** `.agentdocs.toml` at home adds global Sources, and at a project's root that project's; each orders its scope's Sources by name, and one that cannot be used is a row where its Sources would have been. See `docs/adr/0012-*.md`.
 - **Releases.** A tag `v<version>` builds five targets and publishes them as a GitHub release, archives named by target, only after both install scripts have installed them on three systems. See `docs/adr/0013-*.md`. Each archive carries the licences of what the binary is built from, read from files, or the release stops. See `docs/adr/0014-*.md`.
 
@@ -59,7 +59,7 @@ Goal 2 is the constraint that does not show up in the code. The workflow below e
 ## Verification rules
 
 - This program reads other people's files, so **broken input is the normal case**. Surviving a missing path, an empty directory, malformed frontmatter, or an unreadable file is a feature, not an edge case.
-- The corpus used for verification is this machine's `~/.claude`, `~/.agents`, and `~/projects/*/docs`. Verify with counts ("skills 7"), never with "it works".
+- The corpus used for verification is this machine's `~/.claude`, `~/.agents`, and `~/projects/*`. Verify with counts ("skills 7"), never with "it works".
 - Catch `exit 0` with a wrong result before catching crashes. A silent wrong answer travels downstream; a crash does not.
 
 ## Git
