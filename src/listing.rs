@@ -460,7 +460,7 @@ mod tests {
             let path = PathBuf::from("rules").join("locked.md");
             nodes.insert(1, Node::Unreadable { path, reason: io::ErrorKind::PermissionDenied });
         }
-        Walked { nodes }
+        Walked { nodes, ..Walked::default() }
     }
 
     #[test]
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn a_path_that_could_not_be_read_never_carries_a_control_character() {
         let path = PathBuf::from("\u{1b}[31mlocked.md");
-        let walked = Walked { nodes: vec![Node::Unreadable { path, reason: io::ErrorKind::Other }] };
+        let walked = Walked { nodes: vec![Node::Unreadable { path, reason: io::ErrorKind::Other }], ..Walked::default() };
         assert_eq!(listing("rules", &walked, &words(&[]))[1], "    [31mlocked.md (unreadable)");
     }
 
@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn the_matched_line_is_brought_into_view() {
         let long = format!("{} adr tail", "x".repeat(100));
-        let walked = Walked { nodes: vec![Node::Entry(entry_with("gamma", Some(&long)))] };
+        let walked = Walked { nodes: vec![Node::Entry(entry_with("gamma", Some(&long)))], ..Walked::default() };
         let lines = listing("docs", &walked, &words(&["adr"]));
         assert_eq!(lines[2], "      1: …xxxxxxxxx adr tail");
     }
@@ -540,7 +540,7 @@ mod tests {
     fn a_line_from_a_supporting_file_is_marked_with_its_name() {
         let reference = entry_with("REFERENCE", Some("intro\nsee ADR here"));
         let alpha = bundle_with("alpha", Some("lead"), Some(vec![Node::Entry(reference)]));
-        let walked = Walked { nodes: vec![Node::Entry(alpha)] };
+        let walked = Walked { nodes: vec![Node::Entry(alpha)], ..Walked::default() };
         assert_eq!(
             listing("skills", &walked, &words(&["adr"])),
             vec![
@@ -557,7 +557,7 @@ mod tests {
         let mut reference = entry_with("REFERENCE", Some("see ADR here"));
         reference.name = "renamed".to_string();
         let alpha = bundle_with("alpha", Some("lead"), Some(vec![Node::Entry(reference)]));
-        let walked = Walked { nodes: vec![Node::Entry(alpha)] };
+        let walked = Walked { nodes: vec![Node::Entry(alpha)], ..Walked::default() };
         assert_eq!(listing("skills", &walked, &words(&["adr"]))[2], "      renamed:1: see ADR here");
     }
 
@@ -565,7 +565,7 @@ mod tests {
     fn the_name_marking_a_line_never_carries_a_control_character() {
         let reference = entry_with("\u{1b}[31mREF", Some("adr"));
         let alpha = bundle_with("alpha", Some("lead"), Some(vec![Node::Entry(reference)]));
-        let walked = Walked { nodes: vec![Node::Entry(alpha)] };
+        let walked = Walked { nodes: vec![Node::Entry(alpha)], ..Walked::default() };
         assert_eq!(listing("skills", &walked, &words(&["adr"]))[2], "      [31mREF:1: adr");
     }
 
@@ -589,6 +589,7 @@ mod tests {
                 },
                 Node::Entry(entry_with("SPEC", None)),
             ],
+            ..Walked::default()
         };
         assert_eq!(
             listing("docs", &walked, &words(&[])),

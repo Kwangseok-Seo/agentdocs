@@ -5,6 +5,8 @@ use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 use std::str::Chars;
 
+use ignore::Match;
+use ignore::gitignore::Gitignore;
 use serde::Deserialize;
 
 use crate::entry::{Entry, EntryKind, Node, gather, unread};
@@ -27,11 +29,12 @@ pub enum Walk {
 }
 
 fn md_files(dir: &Path) -> io::Result<Walked> {
-    let mut out = Walked::default();
     let read = fs::read_dir(dir)?;
+    let mut out = Walked::reading(dir);
+    let ignored = Ignored::default().and(dir);
 
     for item in read {
-        let Some((path, ft)) = described(dir, item, &mut out) else { continue };
+        let Some((path, ft)) = described(dir, item, &ignored, &mut out) else { continue };
         // A real directory is not a document, whatever it is named. A link is
         // left to `md_entry`, which decides by name: going to see what it points
         // at is walking into it, and a link is never walked into.
@@ -43,17 +46,24 @@ fn md_files(dir: &Path) -> io::Result<Walked> {
 }
 
 fn md_tree(dir: &Path) -> io::Result<Walked> {
-    let mut out = Walked::default();
+    tree(dir, &Ignored::default())
+}
+
+/// `md_tree` from a directory it has come down to, with the rules of the
+/// `.gitignore` files it met on the way.
+fn tree(dir: &Path, above: &Ignored) -> io::Result<Walked> {
     let read = fs::read_dir(dir)?;
+    let mut out = Walked::reading(dir);
+    let ignored = above.and(dir);
 
     for item in read {
-        let Some((path, ft)) = described(dir, item, &mut out) else { continue };
+        let Some((path, ft)) = described(dir, item, &ignored, &mut out) else { continue };
         if ft.is_dir() {
             // A directory named with a leading dot is hidden by convention, and
             // what a tool leaves in one — `.pytest_cache/README.md` — is not
             // documentation. Passed over like a `.txt`, so not shown either.
             if path.file_name().is_some_and(|name| name.to_string_lossy().starts_with('.')) { continue };
-            match md_tree(&path) {
+            match tree(&path, &ignored) {
                 Ok(sub) => out.nest(path, sub),
                 Err(e) => out.nodes.push(unreadable(path, &e)),
             }
@@ -68,11 +78,12 @@ fn md_tree(dir: &Path) -> io::Result<Walked> {
 }
 
 fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
-    let mut out = Walked::default();
     let read = fs::read_dir(dir)?;
+    let mut out = Walked::reading(dir);
+    let ignored = Ignored::default().and(dir);
 
     for item in read {
-        let Some((path, ft)) = described(dir, item, &mut out) else { continue };
+        let Some((path, ft)) = described(dir, item, &ignored, &mut out) else { continue };
         // A Bundle is a directory, and a link standing in for one is listed
         // without being walked into. A link to a *file* is not a Bundle, and
         // asking where a link points is reading rather than walking — but a link
@@ -98,8 +109,11 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
         // asked at all — the entry itself says which it is (ADR-0007). A
         // directory that will not open holds one row saying so.
         let inside = if ft.is_dir() {
-            Some(match supporting(&path, lead.as_deref()) {
-                Ok(sub) => sub.nodes,
+            Some(match supporting(&path, lead.as_deref(), &ignored) {
+                Ok(sub) => {
+                    out.dirs.extend(sub.dirs);
+                    sub.nodes
+                }
                 Err(e) => vec![unreadable(path.clone(), &e)],
             })
         } else {
@@ -128,8 +142,8 @@ fn bundle_dirs(dir: &Path) -> io::Result<Walked> {
 /// own row, so it is taken out — from the top level only: a `SKILL.md` further
 /// down belongs to a directory inside the Bundle, and is a supporting file like
 /// any other.
-fn supporting(dir: &Path, lead: Option<&Path>) -> io::Result<Walked> {
-    let mut walked = md_tree(dir)?;
+fn supporting(dir: &Path, lead: Option<&Path>, above: &Ignored) -> io::Result<Walked> {
+    let mut walked = tree(dir, above)?;
     walked.nodes.retain(|node| match node {
         Node::Entry(entry) => Some(entry.path.as_path()) != lead,
         Node::Dir { .. } | Node::Unreadable { .. } => true,
@@ -140,8 +154,14 @@ fn supporting(dir: &Path, lead: Option<&Path>) -> io::Result<Walked> {
 /// One item of a directory being read, as its path and what kind of thing it
 /// is — or, when the system will not say, a row in `out` for it and `None`.
 /// An item that will not describe itself has no name of its own, so its row
-/// is named by the directory it was found in.
-fn described(dir: &Path, item: io::Result<fs::DirEntry>, out: &mut Walked) -> Option<(PathBuf, fs::FileType)> {
+/// is named by the directory it was found in. One that `ignored` leaves out
+/// is `None` with no row, passed over like a `.txt`.
+fn described(
+    dir: &Path,
+    item: io::Result<fs::DirEntry>,
+    ignored: &Ignored,
+    out: &mut Walked,
+) -> Option<(PathBuf, fs::FileType)> {
     let item = match item {
         Ok(item) => item,
         Err(e) => {
@@ -150,6 +170,7 @@ fn described(dir: &Path, item: io::Result<fs::DirEntry>, out: &mut Walked) -> Op
         }
     };
     match item.file_type() {
+        Ok(ft) if ignored.ignores(&item.path(), ft.is_dir()) => None,
         Ok(ft) => Some((item.path(), ft)),
         Err(e) => {
             out.nodes.push(unreadable(item.path(), &e));
@@ -161,6 +182,50 @@ fn described(dir: &Path, item: io::Result<fs::DirEntry>, out: &mut Walked) -> Op
 /// The row for something at `path` that could not be looked at, and why.
 fn unreadable(path: PathBuf, e: &io::Error) -> Node {
     Node::Unreadable { path, reason: e.kind() }
+}
+
+/// What the `.gitignore` files a Walk has met on its way down say is not the
+/// repository's own: the one in the directory it was asked to read, and one
+/// in each directory it has gone down into since, the nearest last. One above
+/// where the Walk began is never read. A project's `.claude/`, which most of
+/// the repositories this was measured on keep out of git whole, is
+/// documentation all the same; and a home kept in git with a `*`, which
+/// leaves out whatever it does not name, would empty every global Source
+/// (ADR-0015).
+#[derive(Clone, Default)]
+struct Ignored(Vec<Gitignore>);
+
+impl Ignored {
+    /// These rules and those of the `.gitignore` in `dir`, if there is one:
+    /// what holds for the things in `dir`. One that will not read, or a line
+    /// of one that is not a pattern, hides nothing — what it would have
+    /// hidden is shown, rather than lost without a word.
+    ///
+    /// The rules are copied, not borrowed: the `.gitignore` read here is made
+    /// here, and a borrow of it could not leave (E0515). Walking all of
+    /// `~/projects` took as long as with each copy only a pointer.
+    fn and(&self, dir: &Path) -> Ignored {
+        let mut rules = self.clone();
+        let (own, _) = Gitignore::new(dir.join(".gitignore"));
+        if !own.is_empty() {
+            rules.0.push(own);
+        }
+        rules
+    }
+
+    /// Whether `path` is left out. The nearest `.gitignore` with a line that
+    /// matches it decides, so a `!` there takes back what one further up
+    /// said, as it does for git.
+    fn ignores(&self, path: &Path, is_dir: bool) -> bool {
+        for rules in self.0.iter().rev() {
+            match rules.matched(path, is_dir) {
+                Match::Ignore(_) => return true,
+                Match::Whitelist(_) => return false,
+                Match::None => {}
+            }
+        }
+        false
+    }
 }
 
 /// Put one directory's rows in the order a person expects of a directory.
@@ -236,28 +301,25 @@ impl Source {
         }
     }
 
-    /// Where a change to what this Source shows would be seen: paths to watch,
-    /// each with whether to watch below it too. The directory, as far down as
-    /// its Walk goes; and each link standing in for a Bundle, whose Lead is
-    /// read through the link and changes where watching the directory does
-    /// not see it. A directory that could not be walked is watched from the
-    /// nearest one above it that is there, for the moment it appears.
+    /// Where a change to what this Source shows would be seen, each path
+    /// watched alone: every directory its Walk read — so not one it passed
+    /// over, hidden or ignored, nor anything below one — and each link
+    /// standing in for a Bundle, whose Lead is read through the link and
+    /// changes where watching the directory does not see it. A directory that
+    /// could not be walked is watched from the nearest one above it that is
+    /// there, for the moment it appears.
     ///
     /// A link to a file is read through too, and is not watched: a change
     /// behind one shows once something else changes.
-    pub fn watched(&self, walked: &io::Result<Walked>) -> Vec<(PathBuf, bool)> {
+    pub fn watched(&self, walked: &io::Result<Walked>) -> Vec<PathBuf> {
         let Ok(walked) = walked else {
             let above = self.path.ancestors().skip(1).find(|dir| dir.is_dir());
-            return above.map(|dir| vec![(dir.to_path_buf(), false)]).unwrap_or_default();
+            return above.map(|dir| vec![dir.to_path_buf()]).unwrap_or_default();
         };
-        let below = match self.walk {
-            Walk::MarkdownFiles => false,
-            Walk::BundleDirs | Walk::MarkdownTree => true,
-        };
-        let mut out = vec![(self.path.clone(), below)];
+        let mut out = walked.dirs.clone();
         for node in &walked.nodes {
             if let Node::Entry(Entry { path, kind: EntryKind::Bundle { inside: None, .. }, .. }) = node {
-                out.push((path.clone(), false));
+                out.push(path.clone());
             }
         }
         out
@@ -301,13 +363,23 @@ pub fn find_project_root(start: &Path, home: &Path) -> Option<PathBuf> {
 #[derive(Debug, Default, PartialEq)]
 pub struct Walked {
     pub nodes: Vec<Node>,
+    /// Every directory the Walk read, whatever it found there: where a change
+    /// to what it found would be made. One it passed over, or could not open,
+    /// is not among them.
+    pub dirs: Vec<PathBuf>,
 }
 
 impl Walked {
+    /// A Walk that has just read `dir`, and has found nothing in it yet.
+    fn reading(dir: &Path) -> Walked {
+        Walked { nodes: Vec::new(), dirs: vec![dir.to_path_buf()] }
+    }
+
     /// Keep a subdirectory's findings as one row that holds them. A directory
     /// with nothing below it — no Entry, and nothing that could not be read —
-    /// is not a row.
+    /// is not a row, though it was read.
     fn nest(&mut self, path: PathBuf, sub: Walked) {
+        self.dirs.extend(sub.dirs);
         if !sub.nodes.is_empty() {
             self.nodes.push(Node::Dir { path, children: sub.nodes });
         }
@@ -447,7 +519,7 @@ mod tests {
     fn a_subdirectory_holding_only_what_could_not_be_read_is_a_row() {
         // It is where the blind spot is, and the screen shows it there.
         let mut a = Walked::default();
-        let b = Walked { nodes: vec![refused("sub/secret")] };
+        let b = Walked { nodes: vec![refused("sub/secret")], ..Walked::default() };
         a.nest(PathBuf::from("sub"), b);
         assert_eq!(outline(&a.nodes, 0), vec!["sub/", "  secret (permission denied)"]);
     }
@@ -462,6 +534,7 @@ mod tests {
                 Node::Dir { path: PathBuf::from("sub"), children: vec![found("b"), refused("sub/deep")] },
                 Node::Entry(alpha),
             ],
+            ..Walked::default()
         };
         let where_: Vec<String> = walked.unreadable().iter().map(|(path, _)| path.display().to_string()).collect();
         assert_eq!(where_, vec!["top.md", "sub/deep", "alpha/forms.md"]);
@@ -482,6 +555,7 @@ mod tests {
                 },
                 found("d"),
             ],
+            ..Walked::default()
         };
         assert_eq!(names(&walked), vec!["a", "b", "c", "d"]);
     }
@@ -575,6 +649,87 @@ mod tests {
         let walked = md_tree(&dir).unwrap();
         assert_eq!(outline(&walked.nodes, 0), vec!["a"]);
         assert_eq!(walked.unreadable().len(), 0);
+    }
+
+    // -------------------------------------------------------------- .gitignore
+
+    #[test]
+    fn a_file_the_gitignore_leaves_out_is_not_listed() {
+        let dir = scratch("ignore-file");
+        write(&dir.join(".gitignore"), "draft.md\n");
+        write(&dir.join("a.md"), "# a");
+        write(&dir.join("draft.md"), "# draft");
+        write(&dir.join("sub").join("draft.md"), "# draft below");
+
+        // A pattern with no slash but at its end holds at every level.
+        let walked = md_tree(&dir).unwrap();
+        assert_eq!(outline(&walked.nodes, 0), vec!["a"]);
+        assert_eq!(walked.unreadable().len(), 0);
+    }
+
+    #[test]
+    fn a_directory_the_gitignore_leaves_out_is_not_walked_into() {
+        // Git cannot take back a file whose directory it leaves out, so the
+        // `!` in `results/.gitignore` is never read — the directory is not
+        // opened at all.
+        let dir = scratch("ignore-dir");
+        write(&dir.join(".gitignore"), "results/\n");
+        write(&dir.join("a.md"), "# a");
+        write(&dir.join("results").join("run.md"), "# generated");
+        write(&dir.join("results").join(".gitignore"), "!run.md\n");
+
+        assert_eq!(outline(&md_tree(&dir).unwrap().nodes, 0), vec!["a"]);
+    }
+
+    #[test]
+    fn the_nearest_gitignore_decides() {
+        let dir = scratch("ignore-nearest");
+        write(&dir.join(".gitignore"), "secret.md\n");
+        write(&dir.join("secret.md"), "# hidden");
+        write(&dir.join("sub").join(".gitignore"), "!secret.md\n");
+        write(&dir.join("sub").join("secret.md"), "# taken back");
+
+        assert_eq!(outline(&md_tree(&dir).unwrap().nodes, 0), vec!["sub/", "  secret"]);
+    }
+
+    #[test]
+    fn a_gitignore_above_where_the_walk_began_is_not_read() {
+        // A project's `.gitignore` saying `.claude/` does not empty the
+        // project's `.claude` Source. `inner/` names the directory alone, so
+        // `*.md` is there to name its file: either, if read, would hide it.
+        let dir = scratch("ignore-above");
+        write(&dir.join(".gitignore"), "inner/\n*.md\n");
+        write(&dir.join("inner").join("flow.md"), "# flow");
+
+        assert_eq!(names(&md_tree(&dir.join("inner")).unwrap()), vec!["flow"]);
+    }
+
+    #[test]
+    fn a_gitignore_that_will_not_read_leaves_nothing_out() {
+        let dir = scratch("ignore-unread");
+        fs::create_dir_all(dir.join(".gitignore")).unwrap();
+        write(&dir.join("a.md"), "# a");
+
+        assert_eq!(names(&md_tree(&dir).unwrap()), vec!["a"]);
+    }
+
+    #[test]
+    fn every_walk_leaves_out_what_the_gitignore_does() {
+        let dir = scratch("ignore-every-walk");
+        write(&dir.join("rules").join(".gitignore"), "b.md\n");
+        write(&dir.join("rules").join("a.md"), "# a");
+        write(&dir.join("rules").join("b.md"), "# b");
+        write(&dir.join("skills").join(".gitignore"), "beta/\nalpha/scratch.md\n");
+        write(&dir.join("skills").join("alpha").join("SKILL.md"), "# alpha");
+        write(&dir.join("skills").join("alpha").join("REFERENCE.md"), "# kept");
+        write(&dir.join("skills").join("alpha").join("scratch.md"), "# left out");
+        write(&dir.join("skills").join("beta").join("SKILL.md"), "# beta");
+
+        assert_eq!(names(&md_files(&dir.join("rules")).unwrap()), vec!["a"]);
+        let skills = bundle_dirs(&dir.join("skills")).unwrap();
+        assert_eq!(names(&skills), vec!["alpha"]);
+        let inside: Vec<_> = skills.entries()[0].supporting().iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(inside, vec!["REFERENCE"]);
     }
 
     #[test]
@@ -767,17 +922,35 @@ mod tests {
 
     // --------------------------------------------------------- Source::watched
 
-    fn watched(src: &Source) -> Vec<(PathBuf, bool)> {
+    fn watched(src: &Source) -> Vec<PathBuf> {
         src.watched(&src.entries())
     }
 
     #[test]
-    fn a_source_is_watched_as_far_down_as_its_walk_goes() {
+    fn a_source_is_watched_in_every_directory_its_walk_read() {
         let dir = scratch("watched-walks");
-        for (walk, below) in [(Walk::MarkdownFiles, false), (Walk::BundleDirs, true), (Walk::MarkdownTree, true)] {
-            let src = Source::new("any", dir.clone(), Scope::Global, walk);
-            assert_eq!(watched(&src), [(dir.clone(), below)]);
-        }
+        write(&dir.join("alpha").join("SKILL.md"), "# alpha\n");
+        write(&dir.join("alpha").join("deep").join("ref.md"), "# ref\n");
+
+        let files = Source::new("rules", dir.clone(), Scope::Global, Walk::MarkdownFiles);
+        assert_eq!(watched(&files), [dir.as_path()]);
+        let bundles = Source::new("skills", dir.clone(), Scope::Global, Walk::BundleDirs);
+        assert_eq!(watched(&bundles), [dir.clone(), dir.join("alpha"), dir.join("alpha").join("deep")]);
+    }
+
+    #[test]
+    fn a_tree_is_watched_where_it_read_whether_it_found_anything_or_not() {
+        // A project's root, below which `.git/` and an ignored `target/`
+        // change with every commit and every build, and neither is read.
+        let dir = scratch("watched-tree");
+        write(&dir.join("a.md"), "# a\n");
+        write(&dir.join("src").join("main.rs"), "fn main() {}\n");
+        write(&dir.join(".git").join("HEAD"), "ref: refs/heads/main\n");
+        write(&dir.join(".gitignore"), "target/\n");
+        write(&dir.join("target").join("doc").join("x.md"), "# built\n");
+
+        let src = Source::new("root md", dir.clone(), Scope::Project, Walk::MarkdownTree);
+        assert_eq!(watched(&src), [dir.clone(), dir.join("src")]);
     }
 
     #[test]
@@ -792,14 +965,14 @@ mod tests {
         let src = Source::new("skills", skills.clone(), Scope::Global, Walk::BundleDirs);
         let mut paths = watched(&src);
         paths.sort();
-        assert_eq!(paths, [(skills.clone(), true), (skills.join("linked"), false)]);
+        assert_eq!(paths, [skills.clone(), skills.join("alpha"), skills.join("linked")]);
     }
 
     #[test]
     fn a_directory_that_is_not_there_is_watched_from_the_nearest_one_above() {
         let dir = scratch("watched-absent");
         let src = Source::new("docs", dir.join("gone").join("docs"), Scope::Project, Walk::MarkdownTree);
-        assert_eq!(watched(&src), [(dir.clone(), false)]);
+        assert_eq!(watched(&src), [dir.as_path()]);
     }
 
     #[test]

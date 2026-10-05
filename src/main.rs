@@ -97,9 +97,12 @@ fn main() -> io::Result<()> {
     };
 
     if let (Some(r), Some(home)) = (&root, &home) {
+        // Every Markdown file below the root, wherever a project keeps it —
+        // ADR-0015. A Walk passes over a directory named with a dot, so the
+        // one of those that holds agent documentation is a Source of its own.
         let mut project = vec![
-            Source::new("root md", r.clone(), Scope::Project, Walk::MarkdownFiles),
-            Source::new("docs", r.join("docs"), Scope::Project, Walk::MarkdownTree),
+            Source::new("root md", r.clone(), Scope::Project, Walk::MarkdownTree),
+            Source::new(".claude", r.join(".claude"), Scope::Project, Walk::MarkdownTree),
         ];
         if let Err(problem) = config::add(r, home, Scope::Project, &mut project) {
             problems.push((Scope::Project, problem));

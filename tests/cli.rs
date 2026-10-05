@@ -84,10 +84,37 @@ fn a_bare_command_into_a_pipe_lists_every_source_and_finds_the_project_above() {
             "  commands:(missing)".to_string(),
             "  agents/skills:(missing)".to_string(),
             format!("PROJECT {}", home.join("proj").display()),
-            "  root md:1".to_string(),
+            "  root md:2".to_string(),
             row("CLAUDE", "-"),
-            "  docs:1".to_string(),
             row("guide", "-"),
+            "  .claude:(missing)".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn every_markdown_file_below_the_root_is_listed_but_what_its_gitignore_leaves_out() {
+    // ai-gold-backtest keeps each run's summary in git and nothing else of
+    // it; most repositories here keep `.claude/` out of git whole.
+    let home = home("everywhere");
+    write(&home.join("proj/notes/idea.md"), "# idea\n");
+    write(&home.join("proj/out/run/report.md"), "# report\n");
+    write(&home.join("proj/out/run/summary.md"), "# summary\n");
+    write(&home.join("proj/.gitignore"), "out/*/*\n!out/*/summary.md\n.claude/\n");
+    write(&home.join("proj/.claude/workflows/flow.md"), "# flow\n");
+    let (lines, code) = run(&home, &home.join("proj"), &[]);
+    assert_eq!(code, 0);
+    let at = lines.iter().position(|line| line.starts_with("PROJECT")).unwrap();
+    assert_eq!(
+        lines[at + 1..],
+        [
+            "  root md:4".to_string(),
+            row("CLAUDE", "-"),
+            row("guide", "-"),
+            row("idea", "-"),
+            row("summary", "-"),
+            "  .claude:1".to_string(),
+            row("flow", "-"),
         ]
     );
 }
@@ -161,7 +188,7 @@ fn a_config_file_at_the_root_that_cannot_be_used_is_a_row_where_its_sources_woul
     let (lines, code) = run(&home, &home.join("proj"), &[]);
     assert_eq!(code, 0);
     let at = lines.iter().position(|line| line == "  .agentdocs.toml:(invalid)").expect("no row for the file");
-    assert_eq!(lines[at - 2..at], ["  docs:1".to_string(), row("guide", "-")]);
+    assert_eq!(lines[at - 1], "  .claude:(missing)");
     assert_eq!(lines[at + 1], "    TOML parse error at line 4, column 8");
 }
 
@@ -177,7 +204,16 @@ fn a_link_back_up_the_tree_is_listed_and_not_walked_into() {
     }
     let (lines, code) = run(&home, &home.join("proj"), &[]);
     assert_eq!(code, 0);
-    assert_eq!(lines[lines.len() - 3..], ["  docs:2".to_string(), row("guide", "-"), row("second", "-")]);
+    assert_eq!(
+        lines[lines.len() - 5..],
+        [
+            "  root md:3".to_string(),
+            row("CLAUDE", "-"),
+            row("guide", "-"),
+            row("second", "-"),
+            "  .claude:(missing)".to_string(),
+        ]
+    );
 }
 
 #[test]

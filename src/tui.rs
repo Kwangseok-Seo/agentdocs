@@ -629,17 +629,11 @@ impl App {
 
     /// Everything to watch for a change the screen would show, from every
     /// Source, each path once: notify keeps one watch to a path, so giving up
-    /// one of two would give up both. Watched below wins over watched alone.
-    fn watched(&self) -> Vec<(PathBuf, bool)> {
+    /// one of two would give up both.
+    fn watched(&self) -> Vec<PathBuf> {
         let mut all: Vec<_> = self.sources.iter().flat_map(|(src, walked)| src.watched(walked)).collect();
         all.sort();
-        all.dedup_by(|later, kept| {
-            let same = later.0 == kept.0;
-            if same {
-                kept.1 |= later.1;
-            }
-            same
-        });
+        all.dedup();
         all
     }
 
@@ -1045,25 +1039,23 @@ fn read_input(mut read: impl FnMut() -> io::Result<Event>, to_loop: Sender<Messa
     }
 }
 
-/// Watch what `wanted` names, below a path too where it says so, and stop
-/// watching what it no longer names. What cannot be watched — a link whose
-/// target is gone — is left out of `watching`, and so tried again each time
-/// round, until it can be or is no longer wanted. Whether the system refused
-/// a watch for being at its limit is handed back, for the screen to say.
-fn rewatch(watcher: &mut impl Watcher, watching: &mut Vec<(PathBuf, bool)>, wanted: Vec<(PathBuf, bool)>) -> bool {
+/// Watch each path `wanted` names, alone, and stop watching what it no longer
+/// names. What cannot be watched — a link whose target is gone — is left out
+/// of `watching`, and so tried again each time round, until it can be or is
+/// no longer wanted. Whether the system refused a watch for being at its
+/// limit is handed back, for the screen to say.
+fn rewatch(watcher: &mut impl Watcher, watching: &mut Vec<PathBuf>, wanted: Vec<PathBuf>) -> bool {
     if *watching == wanted {
         return false;
     }
-    for (path, _) in watching.iter().filter(|w| !wanted.contains(w)) {
+    for path in watching.iter().filter(|path| !wanted.contains(path)) {
         let _ = watcher.unwatch(path);
     }
     let mut now = Vec::new();
     let mut limited = false;
-    for (path, below) in wanted {
-        let kept = watching.contains(&(path.clone(), below));
-        let mode = if below { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
-        let made = kept
-            || match watcher.watch(&path, mode) {
+    for path in wanted {
+        let made = watching.contains(&path)
+            || match watcher.watch(&path, RecursiveMode::NonRecursive) {
                 Ok(()) => true,
                 Err(e) => {
                     limited |= matches!(e.kind, notify::ErrorKind::MaxFilesWatch);
@@ -1071,7 +1063,7 @@ fn rewatch(watcher: &mut impl Watcher, watching: &mut Vec<(PathBuf, bool)>, want
                 }
             };
         if made {
-            now.push((path, below));
+            now.push(path);
         }
     }
     *watching = now;
@@ -1080,9 +1072,10 @@ fn rewatch(watcher: &mut impl Watcher, watching: &mut Vec<(PathBuf, bool)>, want
 
 /// A watcher that tells the loop over `to_loop` when a file may have changed.
 ///
-/// A link is never walked into (ADR-0007), so it is not watched into either:
-/// on Linux and the BSDs notify would follow one below a directory it watches
-/// whole. The links a Walk reads through are watched by their own paths.
+/// A link is never walked into (ADR-0007), so it is not watched into either.
+/// Nothing is watched whole, which is where notify would follow one on Linux
+/// and the BSDs, and it is told not to all the same. The links a Walk reads
+/// through are watched by their own paths.
 fn watcher(to_loop: Sender<Message>) -> notify::Result<RecommendedWatcher> {
     let config = notify::Config::default().with_follow_symlinks(false);
     RecommendedWatcher::new(tell(to_loop), config)
@@ -1130,12 +1123,15 @@ fn run(terminal: &mut DefaultTerminal, mut app: App) -> io::Result<()> {
     let mut watching = Vec::new();
 
     loop {
+        // What is watched follows what the Walks just read: a directory that
+        // has appeared is watched before the loop waits, and not only once
+        // something else has been heard.
+        app.tick(Instant::now());
         if let Some(watcher) = &mut watcher {
             if rewatch(watcher, &mut watching, app.watched()) {
                 app.limited();
             }
         }
-        app.tick(Instant::now());
         terminal.draw(|frame| app.render(frame))?;
 
         // While something is due — "copied to clipboard" coming down, the
@@ -2030,7 +2026,7 @@ mod tests {
     fn a_watch_refused_at_the_systems_limit_is_handed_back_and_one_not_there_is_not() {
         // Found in review: on Linux at the limit of inotify watches, the
         // refusal was dropped with every other, and the screen said nothing.
-        let wanted = vec![(PathBuf::from("rules"), false), (PathBuf::from("skills"), true)];
+        let wanted = vec![PathBuf::from("rules"), PathBuf::from("skills")];
         let mut watching = Vec::new();
         assert!(rewatch(&mut Refusing { at_limit: true }, &mut watching, wanted.clone()));
         assert!(watching.is_empty());
@@ -2318,6 +2314,7 @@ mod tests {
         write(&skills.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
         write(&skills.join("alpha").join("deep").join("ref.md"), "# ref\n");
         write(&docs.join("a").join("b.md"), "# b\n");
+        write(&docs.join("plain").join("notes.txt"), "no document here yet\n");
         let elsewhere = dir.join("elsewhere").join("linked");
         write(&elsewhere.join("SKILL.md"), "---\nname: linked\n---\n");
         let linked = link_dir(&elsewhere, &skills.join("linked"));
@@ -2338,6 +2335,7 @@ mod tests {
             ("a Bundle's Lead", skills.join("alpha").join("SKILL.md")),
             ("a supporting file further down", skills.join("alpha").join("deep").join("ref.md")),
             ("a document further down a tree", docs.join("a").join("b.md")),
+            ("a document where a tree had found none", docs.join("plain").join("new.md")),
             ("a directory that was not there", missing.join("new.md")),
         ];
         if linked {
@@ -2349,11 +2347,16 @@ mod tests {
         }
 
         // Only once the directory is there is it watched, and the one above it
-        // no longer: that took the Sources being read again.
+        // no longer: that took the Sources being read again. So it is with a
+        // directory that appeared in a tree.
+        std::fs::create_dir(docs.join("later")).unwrap();
+        assert!(heard(&messages, ARRIVES), "a directory appearing in a tree unheard");
         app.reload();
         rewatch(&mut watcher, &mut watching, app.watched());
         write(&missing.join("new.md"), "# changed again\n");
         assert!(heard(&messages, ARRIVES), "a file in the directory that appeared changed unheard");
+        write(&docs.join("later").join("new.md"), "# new\n");
+        assert!(heard(&messages, ARRIVES), "a file in a directory that appeared in a tree unheard");
         write(&project.join("notes.md"), "# not in any Source\n");
         assert!(!heard(&messages, Duration::from_millis(500)), "the directory above is still watched");
     }
@@ -2376,7 +2379,7 @@ mod tests {
         let mut watcher = watcher(to_loop).unwrap();
         let mut watching = Vec::new();
         rewatch(&mut watcher, &mut watching, app.watched());
-        assert_eq!(watching, [(skills.clone(), true)]);
+        assert_eq!(watching, [skills.clone(), skills.join("alpha")]);
 
         write(&target.join("SKILL.md"), "---\nname: linked, back\n---\n");
         rewatch(&mut watcher, &mut watching, app.watched());
@@ -2432,16 +2435,43 @@ mod tests {
     }
 
     #[test]
-    fn a_path_two_sources_watch_differently_is_watched_once_and_below() {
-        // Found in review: watched alone and below at once, the one given up
-        // took the other with it — a project whose root is a Bundle Source.
+    fn a_change_below_where_a_tree_does_not_read_is_not_heard() {
+        // A project's root: git writes below `.git/` at every command, and a
+        // build below an ignored `target/`. Neither is read, and watched
+        // there, every commit and every build would have every Source read
+        // again. One level down, Windows reports the directory itself as
+        // changed — `.git` when git renames its index into place — as it did
+        // while only the root's own files were read.
+        let dir = scratch("tui-watch-passed-over");
+        write(&dir.join("a.md"), "# a\n");
+        write(&dir.join(".gitignore"), "target/\n");
+        write(&dir.join(".git").join("objects").join("ab").join("cdef"), "first\n");
+        write(&dir.join("target").join("debug").join("out.md"), "# first\n");
+        let app = app(vec![Source::new("root md", dir.clone(), Scope::Project, Walk::MarkdownTree)]);
+        let (to_loop, messages) = mpsc::channel();
+        let mut watcher = watcher(to_loop).unwrap();
+        let mut watching = Vec::new();
+        rewatch(&mut watcher, &mut watching, app.watched());
+        settled(&messages);
+
+        write(&dir.join(".git").join("objects").join("ab").join("cdef"), "second\n");
+        write(&dir.join("target").join("debug").join("out.md"), "# second\n");
+        assert!(!heard(&messages, Duration::from_millis(500)), "a change where nothing is read was heard");
+        write(&dir.join("a.md"), "# changed\n");
+        assert!(heard(&messages, ARRIVES), "the tree itself is not watched");
+    }
+
+    #[test]
+    fn a_path_two_sources_watch_is_watched_once() {
+        // Found in review: watched twice, the one given up took the other
+        // with it — a project whose root is a Bundle Source.
         let dir = scratch("tui-watch-twice");
         write(&dir.join("alpha").join("SKILL.md"), "---\nname: alpha\n---\n");
         let app = app(vec![
             Source::new("skills", dir.clone(), Scope::Global, Walk::BundleDirs),
-            Source::new("root md", dir.clone(), Scope::Project, Walk::MarkdownFiles),
+            Source::new("root md", dir.clone(), Scope::Project, Walk::MarkdownTree),
         ]);
-        assert_eq!(app.watched(), [(dir, true)]);
+        assert_eq!(app.watched(), [dir.clone(), dir.join("alpha")]);
     }
 
     // -------------------------------------------------------------- drawing

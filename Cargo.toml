@@ -12,6 +12,7 @@ categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
 base64 = "0.22"
+ignore = "0.4.30"
 notify = "8.2"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.0"
