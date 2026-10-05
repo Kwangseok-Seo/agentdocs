@@ -12,7 +12,9 @@ categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
 base64 = "0.22"
-ignore = "0.4.30"
+# 0.4.30 writes `if let … && let …`, which Rust 1.87 refuses, and declares
+# no rust-version, so cargo takes it for one that builds on 1.87.
+ignore = "=0.4.29"
 notify = "8.2"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.0"

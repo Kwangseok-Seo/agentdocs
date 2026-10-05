@@ -2435,30 +2435,53 @@ mod tests {
     }
 
     #[test]
-    fn a_change_below_where_a_tree_does_not_read_is_not_heard() {
+    fn nothing_below_where_a_tree_does_not_read_is_heard() {
         // A project's root: git writes below `.git/` at every command, and a
         // build below an ignored `target/`. Neither is read, and watched
         // there, every commit and every build would have every Source read
-        // again. One level down, Windows reports the directory itself as
-        // changed — `.git` when git renames its index into place — as it did
-        // while only the root's own files were read.
+        // again. The root itself is watched, and Windows may report `.git`
+        // or `target` as changed when something inside them is — GitHub's
+        // runner did for a file two levels down, this machine did not — as
+        // it did while only the root's own files were read. So what is
+        // asked is what notify names: nothing below either of them.
         let dir = scratch("tui-watch-passed-over");
         write(&dir.join("a.md"), "# a\n");
         write(&dir.join(".gitignore"), "target/\n");
         write(&dir.join(".git").join("objects").join("ab").join("cdef"), "first\n");
         write(&dir.join("target").join("debug").join("out.md"), "# first\n");
         let app = app(vec![Source::new("root md", dir.clone(), Scope::Project, Walk::MarkdownTree)]);
-        let (to_loop, messages) = mpsc::channel();
-        let mut watcher = watcher(to_loop).unwrap();
+        let (to_test, events) = mpsc::channel();
+        let config = notify::Config::default().with_follow_symlinks(false);
+        let report = move |event: notify::Result<notify::Event>| {
+            if let Ok(event) = event {
+                let _ = to_test.send(event.paths);
+            }
+        };
+        let mut watcher = RecommendedWatcher::new(report, config).unwrap();
         let mut watching = Vec::new();
         rewatch(&mut watcher, &mut watching, app.watched());
-        settled(&messages);
+        while events.recv_timeout(Duration::from_millis(500)).is_ok() {}
 
         write(&dir.join(".git").join("objects").join("ab").join("cdef"), "second\n");
         write(&dir.join("target").join("debug").join("out.md"), "# second\n");
-        assert!(!heard(&messages, Duration::from_millis(500)), "a change where nothing is read was heard");
         write(&dir.join("a.md"), "# changed\n");
-        assert!(heard(&messages, ARRIVES), "the tree itself is not watched");
+        // Each path from below the fixture's own directory, found by its name,
+        // so that one spelled from another start — a link resolved, a prefix
+        // added — still counts.
+        let fixture = dir.file_name().unwrap();
+        let mut named: Vec<PathBuf> = Vec::new();
+        let mut wait = ARRIVES;
+        while let Ok(paths) = events.recv_timeout(wait) {
+            for path in paths {
+                if let Some(at) = path.components().position(|part| part.as_os_str() == fixture) {
+                    named.push(path.components().skip(at + 1).collect());
+                }
+            }
+            wait = Duration::from_millis(500);
+        }
+        let below: Vec<_> = named.iter().filter(|path| path.components().count() > 1).collect();
+        assert!(below.is_empty(), "heard below where nothing is read: {below:?}");
+        assert!(named.contains(&PathBuf::from("a.md")), "the tree itself is not watched: {named:?}");
     }
 
     #[test]
